@@ -59,7 +59,7 @@ def forward_dataloader(model, dataloader, batch_size, return_target=True):
             batch_output_dict = model(batch_waveform)
 
         for key in batch_output_dict.keys():
-            if '_list' not in key:
+            if '_list' not in key and isinstance(batch_output_dict[key], torch.Tensor):
                 append_to_dict(output_dict, key, 
                     batch_output_dict[key].data.cpu().numpy())
 
@@ -124,8 +124,8 @@ def forward(model, x, batch_size):
             batch_output_dict = model(batch_waveform)
 
         for key in batch_output_dict.keys():
-            # if '_list' not in key:
-            append_to_dict(output_dict, key, batch_output_dict[key].data.cpu().numpy())
+            if isinstance(batch_output_dict[key], torch.Tensor):
+                append_to_dict(output_dict, key, batch_output_dict[key].data.cpu().numpy())
 
     for key in output_dict.keys():
         output_dict[key] = np.concatenate(output_dict[key], axis=0)

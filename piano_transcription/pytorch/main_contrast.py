@@ -121,6 +121,7 @@ def train(args):
     fmoe_top_k = getattr(args, 'fmoe_top_k', None)
     fmoe_shared_gate = bool(getattr(args, 'fmoe_shared_gate', 0))
     fmoe_uniform_routing = bool(getattr(args, 'fmoe_uniform_routing', 0))
+    fmoe_aux_weight = getattr(args, 'fmoe_aux_weight', 0.0)
     focal_gamma = getattr(args, 'focal_gamma', 0.0)
     print('technique weight: ', technique_weight)
     print('technique MoE weight: ', technique_moe_weight)
@@ -132,6 +133,7 @@ def train(args):
     print('Frame-MoE top-k: ', fmoe_top_k)
     print('Frame-MoE shared gate: ', fmoe_shared_gate)
     print('Frame-MoE uniform routing: ', fmoe_uniform_routing)
+    print('Frame-MoE aux weight: ', fmoe_aux_weight)
     print('focal loss gamma: ', focal_gamma)
     if dataset == 'viotech_mixed_mosavpt':
         print('mosavpt_ratio: ', getattr(args, 'mosavpt_ratio', 0.5))
@@ -1162,9 +1164,10 @@ def train(args):
         # Frame-level Multi-Scale MoE technique losses
         loss_frame_moe_technique = torch.tensor(0.0, device=device)
         loss_frame_moe_balance = torch.tensor(0.0, device=device)
+        loss_fmoe_aux = torch.tensor(0.0, device=device)
         fmoe_tonal = fmoe_artic = fmoe_legato = None
         if technique_frame_moe_weight > 0 and 'fmoe_tonal_logits' in batch_output_dict:
-            fmoe_tonal, fmoe_artic, fmoe_legato, loss_frame_moe_balance = \
+            fmoe_tonal, fmoe_artic, fmoe_legato, loss_frame_moe_balance, loss_fmoe_aux = \
                 frame_multiscale_moe_losses(batch_output_dict, batch_data_dict, device=device, focal_gamma=focal_gamma)
             loss_frame_moe_technique = fmoe_tonal + fmoe_artic + fmoe_legato
 
@@ -1195,7 +1198,8 @@ def train(args):
                 + technique_moe_zone_pt_weight * loss_pt_moe_technique
                 + moe_zone_pt_balance_coeff * loss_pt_moe_balance
                 + technique_frame_moe_weight * loss_frame_moe_technique
-                + frame_moe_balance_coeff * loss_frame_moe_balance)
+                + frame_moe_balance_coeff * loss_frame_moe_balance
+                + fmoe_aux_weight * loss_fmoe_aux)
 
         # Log loss to TensorBoard
         writer.add_scalar('train/loss', loss.item(), iteration)
@@ -1243,6 +1247,8 @@ def train(args):
         if technique_frame_moe_weight > 0:
             writer.add_scalar('train/loss_frame_moe_technique', loss_frame_moe_technique.item(), iteration)
             writer.add_scalar('train/loss_frame_moe_balance', loss_frame_moe_balance.item(), iteration)
+            if fmoe_aux_weight > 0:
+                writer.add_scalar('train/loss_fmoe_aux', loss_fmoe_aux.item(), iteration)
             if fmoe_tonal is not None:
                 writer.add_scalar('train/loss_fmoe_tonal', fmoe_tonal.item(), iteration)
             if fmoe_artic is not None:
@@ -1277,6 +1283,8 @@ def train(args):
         if technique_frame_moe_weight > 0:
             preview_loss['loss_fmoe'] = loss_frame_moe_technique.item()
             preview_loss['loss_fmoe_bal'] = loss_frame_moe_balance.item()
+            if fmoe_aux_weight > 0:
+                preview_loss['loss_fmoe_aux'] = loss_fmoe_aux.item()
         if contrast_weight > 0:
             preview_loss['loss_contrast'] = loss_contrast.item()
         
@@ -1357,6 +1365,8 @@ if __name__ == '__main__':
         help='Weight for Frame-level Multi-Scale MoE technique loss (0 = disabled)')
     parser_train.add_argument('--frame_moe_balance_coeff', type=float, default=0.001,
         help='Coefficient for Frame MoE load-balance auxiliary loss')
+    parser_train.add_argument('--fmoe_aux_weight', type=float, default=0.0,
+        help='Weight for per-expert auxiliary loss (0 = disabled, 0.1 recommended)')
     parser_train.add_argument('--fmoe_spectral_expert', type=int, default=1, choices=[0, 1],
         help='Enable (1) or disable (0) spectral expert in Frame MoE (default: 1)')
     parser_train.add_argument('--fmoe_expert_mask', type=str, default=None,

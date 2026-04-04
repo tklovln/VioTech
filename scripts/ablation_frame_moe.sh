@@ -89,6 +89,8 @@ run_train() {
         --reduce_iteration=1000 \
         --resume_iteration=0 \
         --early_stop=10000 \
+        --patience=10000 \
+        --best_metric=fmoe_loss_technique \
         --device $DEVICE \
         --seed $SEED \
         --dataset viotech_mixed_mosavpt \

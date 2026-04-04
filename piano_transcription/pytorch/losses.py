@@ -236,7 +236,7 @@ def frame_multiscale_moe_losses(output_dict, target_dict, device=None, focal_gam
     """Frame-level multi-scale MoE technique losses.
 
     Delegates to moe_frame_multiscale.frame_moe_technique_losses.
-    Returns (loss_tonal, loss_artic, loss_legato, loss_balance).
+    Returns (loss_tonal, loss_artic, loss_legato, loss_balance, loss_aux).
     """
     from moe_frame_multiscale import frame_moe_technique_losses
     return frame_moe_technique_losses(output_dict, target_dict, device=device,

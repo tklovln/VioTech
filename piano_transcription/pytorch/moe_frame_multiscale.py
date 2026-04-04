@@ -241,6 +241,22 @@ class FrameMultiScaleMoEHead(nn.Module):
         self.artic_head = nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
         self.legato_head = nn.Linear(cfg.shared_dim, 1)
 
+        # Per-expert auxiliary classification heads (training only).
+        # Each expert independently predicts all tasks so the gate can
+        # observe which expert is best for which class/frame.
+        self.aux_tonal_heads = nn.ModuleList([
+            nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
+            for _ in range(num_experts)
+        ])
+        self.aux_artic_heads = nn.ModuleList([
+            nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
+            for _ in range(num_experts)
+        ])
+        self.aux_legato_heads = nn.ModuleList([
+            nn.Linear(cfg.shared_dim, 1)
+            for _ in range(num_experts)
+        ])
+
     def _get_gate_probs(self, gate_module, x):
         logits = gate_module(x)
         num_e = logits.shape[-1]
@@ -328,7 +344,15 @@ class FrameMultiScaleMoEHead(nn.Module):
         artic_logits = self.artic_head(_mix(gp_artic, self.ln_artic))
         legato_prob = torch.sigmoid(self.legato_head(_mix(gp_legato, self.ln_legato)))
 
-        return tonal_logits, artic_logits, legato_prob, gp_tonal, gp_artic, gp_legato
+        # Per-expert auxiliary logits (used only for aux loss during training)
+        aux_tonal = [h(expert_list[i]) for i, h in enumerate(self.aux_tonal_heads)]
+        aux_artic = [h(expert_list[i]) for i, h in enumerate(self.aux_artic_heads)]
+        aux_legato = [torch.sigmoid(h(expert_list[i]))
+                      for i, h in enumerate(self.aux_legato_heads)]
+
+        return (tonal_logits, artic_logits, legato_prob,
+                gp_tonal, gp_artic, gp_legato,
+                aux_tonal, aux_artic, aux_legato)
 
     @staticmethod
     def _top_k_gating(logits, k):
@@ -413,7 +437,68 @@ def frame_moe_technique_losses(output_dict, target_dict, device=None, focal_gamm
     bal_legato = _frame_balance_loss(output_dict.get('fmoe_gate_legato'), active_mask, dev)
     loss_balance = (bal_tonal + bal_artic + bal_legato) / 3.0
 
-    return loss_tonal, loss_artic, loss_legato, loss_balance
+    # Per-expert auxiliary loss (each expert independently predicts all tasks)
+    loss_aux = torch.tensor(0.0, device=dev)
+    aux_tonal_list = output_dict.get('fmoe_aux_tonal')
+    aux_artic_list = output_dict.get('fmoe_aux_artic')
+    aux_legato_list = output_dict.get('fmoe_aux_legato')
+    if aux_tonal_list is not None and 'tonal_technique' in target_dict:
+        E = len(aux_tonal_list)
+        expert_losses = []
+        for e in range(E):
+            # Tonal CE
+            l_t = _aux_frame_ce(aux_tonal_list[e], target_dict, 'tonal_technique',
+                                active_mask, dev, focal_gamma)
+            # Articulation CE
+            l_a = _aux_frame_ce(aux_artic_list[e], target_dict, 'articulation',
+                                active_mask, dev, focal_gamma)
+            # Legato BCE
+            l_l = _aux_legato_bce(aux_legato_list[e], target_dict, active_mask, dev)
+            expert_losses.append(l_t + l_a + l_l)
+        loss_aux = sum(expert_losses) / E
+
+    return loss_tonal, loss_artic, loss_legato, loss_balance, loss_aux
+
+
+def _aux_frame_ce(logits, target_dict, target_key, active_mask, dev, focal_gamma):
+    """CE loss for a single expert's auxiliary head."""
+    if target_key not in target_dict:
+        return torch.tensor(0.0, device=dev)
+    targets = target_dict[target_key].long()
+    T = min(logits.shape[1], targets.shape[1])
+    logits_2d = logits[:, :T, :].reshape(-1, logits.shape[-1])
+    targets_1d = targets[:, :T].reshape(-1)
+    if active_mask is not None:
+        m = active_mask[:, :T].reshape(-1)
+        if m.any():
+            logits_2d = logits_2d[m]
+            targets_1d = targets_1d[m]
+        else:
+            return torch.tensor(0.0, device=dev)
+    return F.cross_entropy(logits_2d, targets_1d)
+
+
+def _aux_legato_bce(pred_prob, target_dict, active_mask, dev):
+    """Weighted BCE loss for a single expert's auxiliary legato head."""
+    if 'legato' not in target_dict:
+        return torch.tensor(0.0, device=dev)
+    pred = pred_prob.squeeze(-1)
+    tgt = target_dict['legato'].float()
+    T = min(pred.shape[1], tgt.shape[1])
+    pred = pred[:, :T]
+    tgt = tgt[:, :T]
+    if active_mask is not None:
+        m = active_mask[:, :T]
+        if not m.any():
+            return torch.tensor(0.0, device=dev)
+        pred = pred[m]
+        tgt = tgt[m]
+    else:
+        pred = pred.reshape(-1)
+        tgt = tgt.reshape(-1)
+    bce = F.binary_cross_entropy(pred, tgt, reduction='none')
+    w = torch.where(tgt > 0.1, 5.0, 1.0)
+    return (bce * w).mean()
 
 
 def _frame_balance_loss(gate_probs, active_mask, device):

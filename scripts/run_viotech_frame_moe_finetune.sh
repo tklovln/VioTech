@@ -20,7 +20,7 @@ fi
 
 TB="${WORKSPACE}/tb"
 PRETRAIN_PATH="${WORKSPACE}/checkpoints/transcriptor_model.pth"
-MODEL_TAG="vioptt_viotech_frame_moe_reduced_lregression_viotech_mixed_mosavpt_techw1_facal2_mosavpt0.2"
+MODEL_TAG="vioptt_viotech_frame_moe_reduced_lregression_viotech_mixed_mosavpt_techw1_facal2_mosavpt0.2_aux0.1_b8"
 RWC_H5="/mnt/hdd/rwc_processed_data.h5"
 
 cd "${WORKSPACE}/piano_transcription"
@@ -34,7 +34,7 @@ python3 pytorch/main_contrast.py train \
     --loss_type='regress_onset_offset_frame_velocity_bce' \
     --augmentation='aug' \
     --max_note_shift=2 \
-    --batch_size=4 \
+    --batch_size=8 \
     --learning_rate=5e-4 \
     --reduce_iteration=1000 \
     --resume_iteration=0 \
@@ -52,6 +52,7 @@ python3 pytorch/main_contrast.py train \
     --frame_moe_balance_coeff=0.001 \
     --fmoe_spectral_expert=0 \
     --focal_gamma=2.0 \
+    --fmoe_aux_weight=0.1 \
     --mosavpt_ratio=0.2 \
     --technique_label_config="${WORKSPACE}/config/technique_label_config_reduced.json" \
     --rwc_eval_h5_path=$RWC_H5 \

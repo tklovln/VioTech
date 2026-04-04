@@ -135,12 +135,13 @@ class SegmentEvaluator(object):
                 if k in output_dict:
                     _td[k] = _to(output_dict[k])
 
-            fmoe_t, fmoe_a, fmoe_l, fmoe_bal = frame_moe_technique_losses(
+            fmoe_t, fmoe_a, fmoe_l, fmoe_bal, fmoe_aux = frame_moe_technique_losses(
                 _od, _td, device=None)
             statistics['fmoe_loss_tonal'] = fmoe_t.item()
             statistics['fmoe_loss_artic'] = fmoe_a.item()
             statistics['fmoe_loss_legato'] = fmoe_l.item()
             statistics['fmoe_loss_balance'] = fmoe_bal.item()
+            statistics['fmoe_loss_aux'] = fmoe_aux.item()
             statistics['fmoe_loss_technique'] = (fmoe_t + fmoe_a + fmoe_l).item()
 
             # Per-class accuracy for tonal technique & articulation

@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="${PROJECT_ROOT}"
 
-CHECKPOINT="${1:-/root/VioPTT/checkpoints/main_contrast/vioptt_viotech_frame_moe_reduced_lregression_viotech_mixed_mosavpt_techw1_facal2_mosavpt0.2/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2/batch_size=4/10000_iterations.pth}"
+CHECKPOINT="${1:-/root/VioPTT/checkpoints/main_contrast/ablation_fmoe_baseline_e012/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2/batch_size=4/5000_iterations.pth}"
 HDF5S_DIR="${2:-${WORKSPACE}/hdf5s/viotech}"
 SPLIT="${3:-validation}"
 DEVICE="${4:-0}"
