@@ -122,6 +122,14 @@ def train(args):
     fmoe_shared_gate = bool(getattr(args, 'fmoe_shared_gate', 0))
     fmoe_uniform_routing = bool(getattr(args, 'fmoe_uniform_routing', 0))
     fmoe_aux_weight = getattr(args, 'fmoe_aux_weight', 0.0)
+    fmoe_temporal_str = getattr(args, 'fmoe_temporal_experts', None)
+    fmoe_temporal_experts = None
+    if fmoe_temporal_str:
+        fmoe_temporal_experts = tuple(
+            tuple(int(x) for x in pair.split(':'))
+            for pair in fmoe_temporal_str.split(',')
+        )
+    fmoe_use_cues = not bool(getattr(args, 'fmoe_no_cues', 0))
     focal_gamma = getattr(args, 'focal_gamma', 0.0)
     print('technique weight: ', technique_weight)
     print('technique MoE weight: ', technique_moe_weight)
@@ -134,6 +142,8 @@ def train(args):
     print('Frame-MoE shared gate: ', fmoe_shared_gate)
     print('Frame-MoE uniform routing: ', fmoe_uniform_routing)
     print('Frame-MoE aux weight: ', fmoe_aux_weight)
+    print('Frame-MoE temporal experts: ', fmoe_temporal_experts)
+    print('Frame-MoE use cues: ', fmoe_use_cues)
     print('focal loss gamma: ', focal_gamma)
     if dataset == 'viotech_mixed_mosavpt':
         print('mosavpt_ratio: ', getattr(args, 'mosavpt_ratio', 0.5))
@@ -216,6 +226,8 @@ def train(args):
             expert_mask=fmoe_expert_mask,
             shared_gate=fmoe_shared_gate,
             uniform_routing=fmoe_uniform_routing,
+            temporal_experts=fmoe_temporal_experts,
+            use_cues=fmoe_use_cues,
         )
         if fmoe_top_k is not None:
             _fmoe_kwargs['top_k'] = fmoe_top_k
@@ -569,7 +581,7 @@ def train(args):
                     mini_data=mini_data,
                 )
             elif dataset == 'viotech_mixed_mosavpt':
-                hdf5s_dir_viotech = os.path.join(workspace, 'hdf5s', 'viotech')
+                hdf5s_dir_viotech = os.path.join(workspace, 'hdf5s', 'viotech_paganini_kayser_with_openstring')
                 hdf5s_dir_mosavpt = args.mosavpt_dir
                 print(f'Creating mixed viotech + mosavpt datasets...')
                 print(f'  viotech dir:   {hdf5s_dir_viotech}')
@@ -1377,6 +1389,11 @@ if __name__ == '__main__':
         help='Use single shared gate for all tasks (1) vs per-task gates (0)')
     parser_train.add_argument('--fmoe_uniform_routing', type=int, default=0, choices=[0, 1],
         help='Bypass gating with equal 1/E weights (1) vs learned gating (0)')
+    parser_train.add_argument('--fmoe_temporal_experts', type=str, default=None,
+        help='Parameterized temporal experts as "k1:d1,k2:d2,..." '
+             '(e.g. "11:1,25:1,51:1,51:2,51:3" for 5-expert). None = legacy 3-expert')
+    parser_train.add_argument('--fmoe_no_cues', type=int, default=0, choices=[0, 1],
+        help='Disable transcription cue injection (1) vs use cues (0)')
     parser_train.add_argument('--focal_gamma', type=float, default=0.0,
         help='Focal loss gamma for technique CE losses (0 = standard CE, 2.0 recommended)')
     parser_train.add_argument('--patience', type=int, default=0,

@@ -17,6 +17,7 @@ Supports:
 
 import os
 import sys
+import json
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), '..', 'utils'))
 
@@ -38,7 +39,15 @@ ARTIC_NAMES = _label_cfg.artic_names
 # (>0.5) the convention flips: 1=bow_change, 0=sustained.  LEGATO_NAMES uses
 # the *post-binarisation* convention which is what gt/pred arrays actually hold.
 LEGATO_NAMES = {0: 'sustained', 1: 'bow_change'}
-EXPERT_NAMES = {0: 'Onset', 1: 'Note', 2: 'Phrase', 3: 'Spectral'}
+EXPERT_NAMES = {0: 'Onset', 1: 'Note', 2: 'Phrase', 3: 'Spectral'}  # overridden at runtime
+
+
+def _reload_label_config(config_path):
+    """Re-initialise the label singleton and update module-level name dicts."""
+    global _label_cfg, TONAL_NAMES, ARTIC_NAMES
+    _label_cfg = get_technique_labels(config_path)
+    TONAL_NAMES = _label_cfg.tonal_names
+    ARTIC_NAMES = _label_cfg.artic_names
 
 
 def _run_eval_loop(model, test_loader, device, dataset_label='dataset'):
@@ -226,11 +235,42 @@ def evaluate(args):
         tuple(int(x) for x in fmoe_mask_str.split(','))
         if fmoe_mask_str else None
     )
+    fmoe_temporal_str = getattr(args, 'fmoe_temporal_experts', None)
+    fmoe_temporal_experts = None
+    if fmoe_temporal_str:
+        fmoe_temporal_experts = tuple(
+            tuple(int(x) for x in pair.split(':'))
+            for pair in fmoe_temporal_str.split(',')
+        )
+    fmoe_use_cues = not bool(getattr(args, 'fmoe_no_cues', 0))
+
+    # Load checkpoint first for cue-mode auto-detection
+    checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=False)
+    state = checkpoint['model']
+
+    # Auto-detect legacy vs unified cue mode from checkpoint weights.
+    # Legacy mode (temporal_experts=None default): E0=P+C=144, E1=P+C=144, E2=P+3C=176
+    # Unified mode: all temporal experts = P+3C=176
+    if fmoe_temporal_experts is None and fmoe_use_cues:
+        _e0_key = 'frame_moe_head.experts.0.net.0.weight'
+        if _e0_key in state:
+            _ckpt_in = state[_e0_key].shape[1]
+            _P, _C = 128, 16   # proj_dim, cue_dim defaults
+            _first_eid = min(fmoe_expert_mask) if fmoe_expert_mask else 0
+            _legacy_dims = {0: _P + _C, 1: _P + _C, 2: _P + 3 * _C}
+            _legacy_expected = _legacy_dims.get(_first_eid, _P + 3 * _C)
+            if _ckpt_in != _legacy_expected and _ckpt_in == _P + 3 * _C:
+                fmoe_temporal_experts = ((11, 1), (51, 1), (51, 3))
+                print(f'Auto-detected: checkpoint trained with unified cues, '
+                      f'setting temporal_experts={fmoe_temporal_experts}')
+
     _fmoe_kw = dict(
         use_spectral_expert=fmoe_spectral,
         expert_mask=fmoe_expert_mask,
         shared_gate=bool(getattr(args, 'fmoe_shared_gate', 0)),
         uniform_routing=bool(getattr(args, 'fmoe_uniform_routing', 0)),
+        temporal_experts=fmoe_temporal_experts,
+        use_cues=fmoe_use_cues,
     )
     fmoe_top_k = getattr(args, 'fmoe_top_k', None)
     if fmoe_top_k is not None:
@@ -238,6 +278,8 @@ def evaluate(args):
     frame_moe_cfg = FrameMultiScaleMoEConfig(**_fmoe_kw)
     print(f'Frame-MoE spectral expert: {fmoe_spectral}')
     print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
+    print(f'Frame-MoE temporal experts: {fmoe_temporal_experts}')
+    print(f'Frame-MoE use cues: {fmoe_use_cues}')
     print(f'Frame-MoE shared gate: {_fmoe_kw["shared_gate"]}')
     print(f'Frame-MoE uniform routing: {_fmoe_kw["uniform_routing"]}')
 
@@ -253,11 +295,28 @@ def evaluate(args):
         frame_moe_config=frame_moe_cfg,
     )
 
-    checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=False)
-    model.load_state_dict(checkpoint['model'], strict=False)
+    # Extract checkpoint metadata
+    ckpt_info = {
+        'checkpoint_path': args.checkpoint_path,
+        'iteration': checkpoint.get('iteration', None),
+        'best_metric': checkpoint.get('best_metric', None),
+        'best_metric_val': checkpoint.get('best_metric_val', None),
+    }
+    if ckpt_info['iteration'] is not None:
+        print(f'Checkpoint info: iteration={ckpt_info["iteration"]}, '
+              f'{ckpt_info["best_metric"]}={ckpt_info["best_metric_val"]:.6f}')
+
+    model.load_state_dict(state, strict=False)
     model.to(device)
     model.eval()
     print(f'Model loaded from {args.checkpoint_path}')
+
+    global EXPERT_NAMES
+    if hasattr(model, 'frame_moe_head'):
+        EXPERT_NAMES = model.frame_moe_head._expert_names
+
+    output_json_path = getattr(args, 'output_json', None)
+    json_output = {'checkpoint': ckpt_info}
 
     # ---- Viotech evaluation ----
     hdf5s_dir = args.hdf5s_dir
@@ -299,6 +358,7 @@ def evaluate(args):
     results = _run_eval_loop(model, test_loader, device, dataset_label='Viotech')
     if results[-1] > 0:
         _print_results('Viotech Frame-MoE (end-to-end)', *results)
+        json_output['viotech'] = _build_results_dict(*results)
     else:
         print('No active frames found in the viotech test set.')
 
@@ -343,8 +403,16 @@ def evaluate(args):
         rwc_results = _run_eval_loop(model, rwc_loader, device, dataset_label='RWC')
         if rwc_results[-1] > 0:
             _print_results('RWC Frame-MoE (cross-dataset)', *rwc_results)
+            json_output['rwc'] = _build_results_dict(*rwc_results)
         else:
             print('[RWC] No active frames found.')
+
+    # ---- Save JSON output ----
+    if output_json_path:
+        os.makedirs(os.path.dirname(output_json_path) or '.', exist_ok=True)
+        with open(output_json_path, 'w') as f:
+            json.dump(json_output, f, indent=2, ensure_ascii=False)
+        print(f'\nResults saved to {output_json_path}')
 
 
 def _print_multiclass_report(title, gt, pred, class_names):
@@ -402,6 +470,83 @@ def _print_multiclass_report(title, gt, pred, class_names):
     print()
 
 
+def _compute_metrics_dict(gt, pred, class_names):
+    """Compute classification metrics and return as a dict."""
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
+    if len(gt) == 0:
+        return {}
+
+    present_classes = sorted(set(gt) | set(pred))
+    acc = accuracy_score(gt, pred)
+    macro_f1 = f1_score(gt, pred, labels=present_classes, average='macro', zero_division=0)
+    weighted_f1 = f1_score(gt, pred, labels=present_classes, average='weighted', zero_division=0)
+    macro_prec = precision_score(gt, pred, labels=present_classes, average='macro', zero_division=0)
+    macro_rec = recall_score(gt, pred, labels=present_classes, average='macro', zero_division=0)
+
+    per_class = {}
+    for cls in present_classes:
+        mask = gt == cls
+        n_total = int(mask.sum())
+        n_correct = int((pred[mask] == cls).sum()) if n_total > 0 else 0
+        name = class_names.get(cls, f'class_{cls}')
+        per_class[name] = {
+            'accuracy': round(n_correct / n_total, 4) if n_total > 0 else 0.0,
+            'support': n_total,
+        }
+
+    return {
+        'accuracy': round(acc, 4),
+        'macro_f1': round(macro_f1, 4),
+        'weighted_f1': round(weighted_f1, 4),
+        'macro_precision': round(macro_prec, 4),
+        'macro_recall': round(macro_rec, 4),
+        'per_class': per_class,
+    }
+
+
+def _gate_to_dict(gate_global, gate_by_class, task_key, class_names):
+    """Convert gate distribution to a JSON-serialisable dict."""
+    gs = gate_global.get(task_key)
+    if gs is None:
+        return {}
+    pct = (gs / gs.sum() * 100).tolist()
+    result = {
+        'global': {EXPERT_NAMES.get(i, f'E{i}'): round(p, 2) for i, p in enumerate(pct)},
+    }
+    bc = gate_by_class.get(task_key, {})
+    if bc:
+        by_cls = {}
+        for cls_id in sorted(bc.keys()):
+            s, c = bc[cls_id]
+            if c == 0:
+                continue
+            avg = s / c
+            cls_pct = (avg / avg.sum() * 100).tolist()
+            name = class_names.get(cls_id, f'class_{cls_id}')
+            by_cls[name] = {EXPERT_NAMES.get(i, f'E{i}'): round(p, 2)
+                            for i, p in enumerate(cls_pct)}
+        result['by_class'] = by_cls
+    return result
+
+
+def _build_results_dict(tonal_gt, tonal_pred, artic_gt, artic_pred,
+                        legato_gt, legato_pred, gate_global, gate_by_class,
+                        total_frames):
+    """Build a full results dict for JSON output."""
+    return {
+        'total_active_frames': int(total_frames),
+        'tonal': _compute_metrics_dict(tonal_gt, tonal_pred, TONAL_NAMES),
+        'articulation': _compute_metrics_dict(artic_gt, artic_pred, ARTIC_NAMES),
+        'legato': _compute_metrics_dict(legato_gt, legato_pred, LEGATO_NAMES),
+        'gate_distribution': {
+            'tonal': _gate_to_dict(gate_global, gate_by_class, 'tonal', TONAL_NAMES),
+            'articulation': _gate_to_dict(gate_global, gate_by_class, 'artic', ARTIC_NAMES),
+            'legato': _gate_to_dict(gate_global, gate_by_class, 'legato', LEGATO_NAMES),
+        },
+    }
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Evaluate Frame-level Multi-Scale MoE technique (+ optional RWC)')
@@ -427,5 +572,17 @@ if __name__ == '__main__':
                         help='Shared gate (must match training config)')
     parser.add_argument('--fmoe_uniform_routing', type=int, default=0, choices=[0, 1],
                         help='Uniform routing (must match training config)')
+    parser.add_argument('--fmoe_temporal_experts', type=str, default=None,
+                        help='Temporal experts as "k1:d1,k2:d2,..." (must match training)')
+    parser.add_argument('--fmoe_no_cues', type=int, default=0, choices=[0, 1],
+                        help='Disable cues (must match training config)')
+    parser.add_argument('--output_json', type=str, default=None,
+                        help='Path to save evaluation results as JSON')
+    parser.add_argument('--technique_label_config', type=str, default=None,
+                        help='Path to technique_label_config JSON (must match training)')
     args = parser.parse_args()
+
+    if args.technique_label_config:
+        _reload_label_config(args.technique_label_config)
+
     evaluate(args)

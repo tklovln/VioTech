@@ -36,10 +36,10 @@ class FrameMultiScaleMoEConfig:
     feat_dim: int = 512
     proj_dim: int = 128
     num_experts: int = 4
-    short_kernel: int = 11      # ~110ms at 100fps
-    note_kernel: int = 51       # ~510ms
-    phrase_kernel: int = 51     # dilated×3 → effective ~1.5s
-    phrase_dilation: int = 3
+    short_kernel: int = 11      # ~110ms at 100fps  (legacy; use temporal_experts instead)
+    note_kernel: int = 51       # ~510ms             (legacy)
+    phrase_kernel: int = 51     # dilated×3 → ~1.5s  (legacy)
+    phrase_dilation: int = 3    #                     (legacy)
     expert_hidden: int = 256
     shared_dim: int = 128
     num_tonal_classes: int = 4
@@ -55,6 +55,9 @@ class FrameMultiScaleMoEConfig:
     expert_mask: tuple = None       # e.g. (0,1,2) — None means all available
     shared_gate: bool = False       # single gate shared across tonal/artic/legato
     uniform_routing: bool = False   # equal-weight bypass (no learned gating)
+    # --- parameterized temporal experts ---
+    temporal_experts: tuple = None  # ((kernel, dilation), ...) None = legacy 3-expert
+    use_cues: bool = True           # inject transcription cues into experts and gate
 
 
 # ---------------------------------------------------------------------------
@@ -168,40 +171,72 @@ class FrameMultiScaleMoEHead(nn.Module):
         cfg = cfg or FrameMultiScaleMoEConfig()
         self.cfg = cfg
         self.use_spectral = cfg.use_spectral_expert
+        self.use_cues = cfg.use_cues
         D = cfg.feat_dim
         P = cfg.proj_dim
         C = cfg.cue_dim
         SP = cfg.spectral_proj_dim
 
+        # Resolve temporal expert definitions
+        # Legacy mode: temporal_experts=None → old per-expert cue assignment
+        #   Expert 0: P+C (onset), Expert 1: P+C (frame), Expert 2: P+3C (all)
+        # New mode: temporal_experts specified → unified all cues for every expert
+        self._legacy_cue_mode = (cfg.temporal_experts is None and self.use_cues)
+        if cfg.temporal_experts is not None:
+            temporal_defs = tuple(cfg.temporal_experts)
+        else:
+            temporal_defs = (
+                (cfg.short_kernel, 1),
+                (cfg.note_kernel, 1),
+                (cfg.phrase_kernel, cfg.phrase_dilation),
+            )
+        self.temporal_defs = temporal_defs
+        N_temporal = len(temporal_defs)
+        self.n_temporal = N_temporal
+
+        # Spectral expert index = N_temporal (last)
+        N_total = N_temporal + (1 if self.use_spectral else 0)
+
         # Resolve which experts are active
         if cfg.expert_mask is not None:
             mask = tuple(sorted(cfg.expert_mask))
         else:
-            mask = (0, 1, 2, 3) if self.use_spectral else (0, 1, 2)
-        if 3 in mask and not self.use_spectral:
-            raise ValueError("Expert 3 (spectral) requires use_spectral_expert=True")
+            mask = tuple(range(N_total))
+        spectral_idx = N_temporal
+        if spectral_idx in mask and not self.use_spectral:
+            raise ValueError(
+                f"Expert {spectral_idx} (spectral) requires use_spectral_expert=True")
         self.active_expert_ids = list(mask)
 
-        # Transcription cue projections (scalar → small embedding)
-        self.onset_proj = nn.Linear(1, C)
-        self.offset_proj = nn.Linear(1, C)
-        self.frame_proj = nn.Linear(1, C)
+        # Build expert name map for evaluation reporting
+        self._expert_names = {}
+        for i, (k, d) in enumerate(temporal_defs):
+            eff_ms = k * d * 10  # at 100fps each frame = 10ms
+            self._expert_names[i] = f'T{i}({k}x{d}={eff_ms}ms)'
+        if self.use_spectral:
+            self._expert_names[spectral_idx] = 'Spectral'
 
-        # Always build all 3 temporal contexts (cheap; needed for gate input)
-        self.short_ctx = _TemporalCtx(D, P, cfg.short_kernel)
-        self.note_ctx = _TemporalCtx(D, P, cfg.note_kernel)
-        self.phrase_ctx = _TemporalCtx(D, P, cfg.phrase_kernel,
-                                       dilation=cfg.phrase_dilation)
+        # Transcription cue projections (only if use_cues)
+        cue_total = 3 * C if self.use_cues else 0
+        if self.use_cues:
+            self.onset_proj = nn.Linear(1, C)
+            self.offset_proj = nn.Linear(1, C)
+            self.frame_proj = nn.Linear(1, C)
 
-        # Expert input dims
-        _exp_in = {
-            0: P + C,       # short_ctx + onset_cue
-            1: P + C,       # note_ctx  + frame_cue
-            2: P + 3 * C,   # phrase_ctx + all three cues
-        }
+        # Build all temporal context extractors
+        self.temporal_ctxs = nn.ModuleList([
+            _TemporalCtx(D, P, k, d) for k, d in temporal_defs
+        ])
 
-        # Gate input always includes all 3 temporal contexts + 3 cues
-        gate_in = 3 * P + 3 * C
+        # Per-expert input dims
+        if self._legacy_cue_mode:
+            # Old per-expert cue assignment: E0=P+C, E1=P+C, E2=P+3C
+            _exp_in = {0: P + C, 1: P + C, 2: P + 3 * C}
+        else:
+            _exp_in = {i: P + cue_total for i in range(N_temporal)}
+
+        # Gate input: all N temporal contexts + 3 cues + (spectral if present)
+        gate_in = N_temporal * P + cue_total
 
         if self.use_spectral:
             self.spectral_cnn = _DedicatedSpectralCNN(out_dim=SP)
@@ -210,17 +245,21 @@ class FrameMultiScaleMoEHead(nn.Module):
                 nn.LayerNorm(P),
                 nn.GELU(),
             )
-            _exp_in[3] = SP + P + C   # spectral_cnn + gru_feat_proj + frame_cue
-            gate_in += SP + P         # add spectral ctx + gru proj to gate
+            if self._legacy_cue_mode:
+                _exp_in[spectral_idx] = SP + P + C
+            else:
+                _exp_in[spectral_idx] = SP + P + cue_total
+            gate_in += SP + P
 
+        # Build expert MLPs for active experts
         experts = []
         for eid in self.active_expert_ids:
-            experts.append(
-                _Expert(_exp_in[eid], cfg.expert_hidden, cfg.shared_dim,
-                        cfg.expert_dropout))
+            experts.append(_Expert(_exp_in[eid], cfg.expert_hidden,
+                                   cfg.shared_dim, cfg.expert_dropout))
         self.experts = nn.ModuleList(experts)
         num_experts = len(experts)
 
+        # Gates
         gate_hidden = cfg.expert_hidden // 2
         if cfg.shared_gate:
             self.gate_shared = _Gate(gate_in, num_experts, gate_hidden,
@@ -233,6 +272,7 @@ class FrameMultiScaleMoEHead(nn.Module):
             self.gate_legato = _Gate(gate_in, num_experts, gate_hidden,
                                      cfg.gate_dropout)
 
+        # Classification heads
         self.ln_tonal = nn.LayerNorm(cfg.shared_dim)
         self.ln_artic = nn.LayerNorm(cfg.shared_dim)
         self.ln_legato = nn.LayerNorm(cfg.shared_dim)
@@ -241,9 +281,7 @@ class FrameMultiScaleMoEHead(nn.Module):
         self.artic_head = nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
         self.legato_head = nn.Linear(cfg.shared_dim, 1)
 
-        # Per-expert auxiliary classification heads (training only).
-        # Each expert independently predicts all tasks so the gate can
-        # observe which expert is best for which class/frame.
+        # Per-expert auxiliary classification heads (training only)
         self.aux_tonal_heads = nn.ModuleList([
             nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
             for _ in range(num_experts)
@@ -281,18 +319,21 @@ class FrameMultiScaleMoEHead(nn.Module):
             logmel:      (B, 1, T, 229) BN-normalised log-mel spectrogram
             conv2d_map:  (B, C_in, T, F) (unused, kept for backward compat)
         """
-        c_onset = F.gelu(self.onset_proj(onset_prob))
-        c_offset = F.gelu(self.offset_proj(offset_prob))
-        c_frame = F.gelu(self.frame_proj(frame_prob))
+        # Compute all temporal contexts
+        temporal_outs = [ctx(features) for ctx in self.temporal_ctxs]
+        T_feat = temporal_outs[0].shape[1]
 
-        s_short = self.short_ctx(features)
-        s_note = self.note_ctx(features)
-        s_phrase = self.phrase_ctx(features)
+        # Cue embeddings (only if use_cues)
+        c_onset = c_offset = c_frame = cue_cat = None
+        if self.use_cues:
+            c_onset = F.gelu(self.onset_proj(onset_prob))
+            c_offset = F.gelu(self.offset_proj(offset_prob))
+            c_frame = F.gelu(self.frame_proj(frame_prob))
+            cue_cat = torch.cat([c_onset, c_offset, c_frame], dim=-1)
 
-        # Pre-compute spectral features if the CNN is present
+        # Spectral features
         s_spec = f_proj = None
         if self.use_spectral:
-            T_feat = s_short.shape[1]
             if logmel is not None:
                 s_spec = self.spectral_cnn(logmel)
                 T_spec = s_spec.shape[1]
@@ -305,25 +346,41 @@ class FrameMultiScaleMoEHead(nn.Module):
                                      device=features.device)
             f_proj = self.feat_proj(features)
 
-        # Build expert inputs for active experts only
-        _inp_builders = {
-            0: lambda: torch.cat([s_short, c_onset], dim=-1),
-            1: lambda: torch.cat([s_note, c_frame], dim=-1),
-            2: lambda: torch.cat([s_phrase, c_onset, c_offset, c_frame], dim=-1),
-            3: lambda: torch.cat([s_spec, f_proj, c_frame], dim=-1),
-        }
+        # Build expert inputs for active experts
+        if self._legacy_cue_mode:
+            _inp_builders = {
+                0: lambda: torch.cat([temporal_outs[0], c_onset], dim=-1),
+                1: lambda: torch.cat([temporal_outs[1], c_frame], dim=-1),
+                2: lambda: torch.cat([temporal_outs[2], c_onset, c_offset, c_frame], dim=-1),
+            }
+            if self.use_spectral:
+                _inp_builders[self.n_temporal] = lambda: torch.cat(
+                    [s_spec, f_proj, c_frame], dim=-1)
 
         expert_list = []
         for idx, eid in enumerate(self.active_expert_ids):
-            expert_list.append(self.experts[idx](_inp_builders[eid]()))
+            if self._legacy_cue_mode:
+                inp = _inp_builders[eid]()
+            elif eid < self.n_temporal:
+                parts = [temporal_outs[eid]]
+                if cue_cat is not None:
+                    parts.append(cue_cat)
+                inp = torch.cat(parts, dim=-1)
+            else:
+                parts = [s_spec, f_proj]
+                if cue_cat is not None:
+                    parts.append(cue_cat)
+                inp = torch.cat(parts, dim=-1)
+            expert_list.append(self.experts[idx](inp))
 
         expert_outs = torch.stack(expert_list, dim=-2)  # (B, T, E, shared_dim)
 
-        # Gate input (always full context for fair comparison)
-        gate_parts = [s_short, s_note, s_phrase]
+        # Gate input: all temporal contexts + (spectral) + (cues)
+        gate_parts = list(temporal_outs)
         if self.use_spectral:
             gate_parts.extend([s_spec, f_proj])
-        gate_parts.extend([c_onset, c_offset, c_frame])
+        if cue_cat is not None:
+            gate_parts.append(cue_cat)
         gate_in = torch.cat(gate_parts, dim=-1)
 
         if self.cfg.uniform_routing:
@@ -344,7 +401,7 @@ class FrameMultiScaleMoEHead(nn.Module):
         artic_logits = self.artic_head(_mix(gp_artic, self.ln_artic))
         legato_prob = torch.sigmoid(self.legato_head(_mix(gp_legato, self.ln_legato)))
 
-        # Per-expert auxiliary logits (used only for aux loss during training)
+        # Per-expert auxiliary logits (training only)
         aux_tonal = [h(expert_list[i]) for i, h in enumerate(self.aux_tonal_heads)]
         aux_artic = [h(expert_list[i]) for i, h in enumerate(self.aux_artic_heads)]
         aux_legato = [torch.sigmoid(h(expert_list[i]))
@@ -365,7 +422,19 @@ class FrameMultiScaleMoEHead(nn.Module):
 # ---------------------------------------------------------------------------
 # Losses — frame-level with active-mask
 # ---------------------------------------------------------------------------
+# Legacy fixed names (used when temporal_experts is not specified)
 EXPERT_NAMES = {0: 'Onset', 1: 'Note', 2: 'Phrase', 3: 'Spectral'}
+
+
+def make_expert_names(temporal_defs, use_spectral=False):
+    """Generate expert name dict from temporal definitions."""
+    names = {}
+    for i, (k, d) in enumerate(temporal_defs):
+        eff_ms = k * d * 10
+        names[i] = f'T{i}({k}x{d}={eff_ms}ms)'
+    if use_spectral:
+        names[len(temporal_defs)] = 'Spectral'
+    return names
 
 
 def frame_moe_technique_losses(output_dict, target_dict, device=None, focal_gamma=0.0):

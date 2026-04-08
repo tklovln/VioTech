@@ -1,0 +1,120 @@
+
+=================================================================
+  TRAIN SET
+=================================================================
+  Songs: 48
+  Total notes: 46500
+  Audio duration: 8187.1s (255847 frames)
+
+  Tonal Technique:
+    Technique          Notes  Duration(s)     Frames
+    -----------------------------------------------
+    harmonics            248        110.2       3444
+    none               42762       9072.5     283515
+    openstring          3480        905.1      28284
+    pizzicato             10          5.5        171
+
+  Articulation:
+    Articulation       Notes  Duration(s)     Frames
+    -----------------------------------------------
+    none               36183       8547.4     267104
+    release              175        128.5       4016
+    spiccato            7566        946.7      29583
+    staccato            2576        470.7      14710
+
+  Legato: 20199 notes, 3252.3s (101635 frames)
+
+  Included folders (48):
+    - Kayser_Op20-01_AlexandrosIakovou
+    - Kayser_Op20-02_AlexandrosIakovou
+    - Kayser_Op20-03_AlexandrosIakovou
+    - Kayser_Op20-04_AlexandrosIakovou
+    - Kayser_Op20-06_AlexandrosIakovou
+    - Kayser_Op20-07_AlexandrosIakovou
+    - Kayser_Op20-08_AlexandrosIakovou
+    - Kayser_Op20-09_AlexandrosIakovou
+    - Kayser_Op20-10_AlexandrosIakovou
+    - Kayser_Op20-11_AlexandrosIakovou
+    - Kayser_Op20-12_AlexandrosIakovou
+    - Kayser_Op20-13_AlexandrosIakovou
+    - Kayser_Op20-14_AlexandrosIakovou
+    - Kayser_Op20-16_AlexandrosIakovou
+    - Kayser_Op20-19_AlexandrosIakovou
+    - Kayser_Op20-22_AlexandrosIakovou
+    - Kayser_Op20-23_AlexandrosIakovou
+    - Kayser_Op20-24_BochanKang
+    - Kayser_Op20-26_AlexandrosIakovou
+    - Kayser_Op20-27_AlexandrosIakovou
+    - Kayser_Op20-28_AlexandrosIakovou
+    - Kayser_Op20-29_AlexandrosIakovou
+    - Kayser_Op20-30_AlexandrosIakovou
+    - Kayser_Op20-31_AlexandrosIakovou
+    - Kayser_Op20-32_AlexandrosIakovou
+    - Kayser_Op20-33_AlexandrosIakovou
+    - Kayser_Op20-34_AlexandrosIakovou
+    - Kayser_Op20-35_AlexandrosIakovou
+    - Kayser_Op20-36_AlexandrosIakovou
+    - Paganini_Op01-01_AlicanSuner
+    - Paganini_Op01-02_AlicanSuner
+    - Paganini_Op01-03_AlicanSuner
+    - Paganini_Op01-04_AlicanSuner
+    - Paganini_Op01-06_AlicanSuner
+    - Paganini_Op01-07_AlicanSuner
+    - Paganini_Op01-09_AlicanSuner
+    - Paganini_Op01-10_AlicanSuner
+    - Paganini_Op01-11_AugustinHadelich
+    - Paganini_Op01-12_AlicanSuner
+    - Paganini_Op01-13_AlicanSuner
+    - Paganini_Op01-14_AlicanSuner
+    - Paganini_Op01-15_AlicanSuner
+    - Paganini_Op01-16_AlicanSuner
+    - Paganini_Op01-17_AugustinHadelich
+    - Paganini_Op01-19_AlicanSuner
+    - Paganini_Op01-20_AlicanSuner
+    - Paganini_Op01-21_AlicanSuner
+    - Paganini_Op01-22_InmoYang
+
+=================================================================
+  TEST SET
+=================================================================
+  Songs: 10
+  Total notes: 8703
+  Audio duration: 1708.3s (53383 frames)
+
+  Tonal Technique:
+    Technique          Notes  Duration(s)     Frames
+    -----------------------------------------------
+    harmonics             35         16.3        508
+    none                7865       1742.2      54445
+    openstring           694        197.1       6159
+    pizzicato            109         33.1       1034
+
+  Articulation:
+    Articulation       Notes  Duration(s)     Frames
+    -----------------------------------------------
+    none                6689       1641.4      51293
+    release              114         82.6       2581
+    spiccato            1212        141.9       4434
+    staccato             688        122.8       3838
+
+  Legato: 3054 notes, 550.6s (17207 frames)
+
+  Included folders (10):
+    - Kayser_Op20-05_AlexandrosIakovou
+    - Kayser_Op20-15_AlexandrosIakovou
+    - Kayser_Op20-17_AlexandrosIakovou
+    - Kayser_Op20-18_AlexandrosIakovou
+    - Kayser_Op20-20_AlexandrosIakovou
+    - Kayser_Op20-21_AlexandrosIakovou
+    - Kayser_Op20-25_AlexandrosIakovou
+    - Paganini_Op01-08_AlicanSuner
+    - Paganini_Op01-18_AlicanSuner
+    - Paganini_Op01-24_AlicanSuner
+
+=================================================================
+  OVERALL SUMMARY
+=================================================================
+  Total songs: 58
+  Total notes: 55203
+  Total audio duration: 9895.4s (309231 frames)
+  Split distribution: train=48, test=10

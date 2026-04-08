@@ -1,0 +1,103 @@
+{
+  "overall_precision": 0.08270593702888904,
+  "overall_recall": 0.11040783681797968,
+  "overall_f1": 0.09438301752403952,
+  "overall_f1_wo_offset": 0.12201865197612574,
+  "total_ref_notes": 421,
+  "total_est_notes": 548,
+  "num_songs": 10,
+  "per_song_results": [
+    {
+      "song_name": "04-ChristeDuBeistand",
+      "precision": 0.08928571428571429,
+      "recall": 0.1111111111111111,
+      "f1": 0.099009900990099,
+      "f1_wo_offset": 0.099009900990099,
+      "num_ref_notes": 45,
+      "num_est_notes": 56
+    },
+    {
+      "song_name": "01-AchGottundHerr",
+      "precision": 0.023255813953488372,
+      "recall": 0.029411764705882353,
+      "f1": 0.025974025974025976,
+      "f1_wo_offset": 0.07792207792207792,
+      "num_ref_notes": 34,
+      "num_est_notes": 43
+    },
+    {
+      "song_name": "10-NunBitten",
+      "precision": 0.22784810126582278,
+      "recall": 0.34615384615384615,
+      "f1": 0.2748091603053435,
+      "f1_wo_offset": 0.30534351145038174,
+      "num_ref_notes": 52,
+      "num_est_notes": 79
+    },
+    {
+      "song_name": "06-DieSonne",
+      "precision": 0.05263157894736842,
+      "recall": 0.06521739130434782,
+      "f1": 0.05825242718446602,
+      "f1_wo_offset": 0.05825242718446602,
+      "num_ref_notes": 46,
+      "num_est_notes": 57
+    },
+    {
+      "song_name": "07-HerrGott",
+      "precision": 0.05128205128205128,
+      "recall": 0.06451612903225806,
+      "f1": 0.05714285714285715,
+      "f1_wo_offset": 0.08571428571428572,
+      "num_ref_notes": 31,
+      "num_est_notes": 39
+    },
+    {
+      "song_name": "03-ChristederdubistTagundLicht",
+      "precision": 0.14893617021276595,
+      "recall": 0.1891891891891892,
+      "f1": 0.16666666666666666,
+      "f1_wo_offset": 0.23809523809523814,
+      "num_ref_notes": 37,
+      "num_est_notes": 47
+    },
+    {
+      "song_name": "08-FuerDeinenThron",
+      "precision": 0.05405405405405406,
+      "recall": 0.0625,
+      "f1": 0.057971014492753624,
+      "f1_wo_offset": 0.057971014492753624,
+      "num_ref_notes": 32,
+      "num_est_notes": 37
+    },
+    {
+      "song_name": "02-AchLiebenChristen",
+      "precision": 0.07608695652173914,
+      "recall": 0.09859154929577464,
+      "f1": 0.08588957055214724,
+      "f1_wo_offset": 0.11042944785276075,
+      "num_ref_notes": 71,
+      "num_est_notes": 92
+    },
+    {
+      "song_name": "09-Jesus",
+      "precision": 0.06521739130434782,
+      "recall": 0.08333333333333333,
+      "f1": 0.07317073170731707,
+      "f1_wo_offset": 0.0975609756097561,
+      "num_ref_notes": 36,
+      "num_est_notes": 46
+    },
+    {
+      "song_name": "05-DieNacht",
+      "precision": 0.038461538461538464,
+      "recall": 0.05405405405405406,
+      "f1": 0.0449438202247191,
+      "f1_wo_offset": 0.0898876404494382,
+      "num_ref_notes": 37,
+      "num_est_notes": 52
+    }
+  ],
+  "failed_results": [],
+  "checkpoint_path": "/root/VioPTT/checkpoints/main_contrast/ablation_fmoe_openstring_baseline_e012/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2/batch_size=4/best_model.pth"
+}

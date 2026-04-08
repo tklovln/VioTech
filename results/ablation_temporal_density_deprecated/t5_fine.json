@@ -1,0 +1,318 @@
+{
+  "checkpoint": {
+    "checkpoint_path": "/root/VioPTT/checkpoints/main_contrast/ablation_tdensity_t5_fine/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2/batch_size=4/best_model.pth",
+    "iteration": 7000,
+    "best_metric": "fmoe_loss_technique",
+    "best_metric_val": 0.8527
+  },
+  "viotech": {
+    "total_active_frames": 672820,
+    "tonal": {
+      "accuracy": 0.9562,
+      "macro_f1": 0.2493,
+      "weighted_f1": 0.9353,
+      "macro_precision": 0.4873,
+      "macro_recall": 0.2525,
+      "per_class": {
+        "none": {
+          "accuracy": 1.0,
+          "support": 643115
+        },
+        "pizzicato": {
+          "accuracy": 0.0,
+          "support": 0
+        },
+        "harmonics": {
+          "accuracy": 0.01,
+          "support": 28535
+        },
+        "openstring": {
+          "accuracy": 0.0,
+          "support": 1170
+        }
+      }
+    },
+    "articulation": {
+      "accuracy": 0.7995,
+      "macro_f1": 0.3968,
+      "weighted_f1": 0.77,
+      "macro_precision": 0.3884,
+      "macro_recall": 0.4065,
+      "per_class": {
+        "none": {
+          "accuracy": 0.9123,
+          "support": 452726
+        },
+        "release": {
+          "accuracy": 0.0,
+          "support": 18389
+        },
+        "staccato": {
+          "accuracy": 0.0,
+          "support": 26741
+        },
+        "spiccato": {
+          "accuracy": 0.7136,
+          "support": 174964
+        }
+      }
+    },
+    "legato": {
+      "accuracy": 0.7976,
+      "macro_f1": 0.685,
+      "weighted_f1": 0.8013,
+      "macro_precision": 0.6789,
+      "macro_recall": 0.6924,
+      "per_class": {
+        "sustained": {
+          "accuracy": 0.8628,
+          "support": 544126
+        },
+        "bow_change": {
+          "accuracy": 0.5221,
+          "support": 128694
+        }
+      }
+    },
+    "gate_distribution": {
+      "tonal": {
+        "global": {
+          "T0(11x1=110ms)": 44.28,
+          "T1(25x1=250ms)": 55.59,
+          "T2(51x1=510ms)": 0.0,
+          "T3(51x2=1020ms)": 0.12,
+          "T4(51x3=1530ms)": 0.01
+        },
+        "by_class": {
+          "none": {
+            "T0(11x1=110ms)": 43.65,
+            "T1(25x1=250ms)": 56.33,
+            "T2(51x1=510ms)": 0.0,
+            "T3(51x2=1020ms)": 0.01,
+            "T4(51x3=1530ms)": 0.01
+          },
+          "harmonics": {
+            "T0(11x1=110ms)": 58.44,
+            "T1(25x1=250ms)": 39.05,
+            "T2(51x1=510ms)": 0.0,
+            "T3(51x2=1020ms)": 2.51,
+            "T4(51x3=1530ms)": 0.01
+          },
+          "openstring": {
+            "T0(11x1=110ms)": 46.7,
+            "T1(25x1=250ms)": 53.27,
+            "T2(51x1=510ms)": 0.0,
+            "T3(51x2=1020ms)": 0.03,
+            "T4(51x3=1530ms)": 0.0
+          }
+        }
+      },
+      "articulation": {
+        "global": {
+          "T0(11x1=110ms)": 36.51,
+          "T1(25x1=250ms)": 0.0,
+          "T2(51x1=510ms)": 14.65,
+          "T3(51x2=1020ms)": 48.3,
+          "T4(51x3=1530ms)": 0.54
+        },
+        "by_class": {
+          "none": {
+            "T0(11x1=110ms)": 32.17,
+            "T1(25x1=250ms)": 0.0,
+            "T2(51x1=510ms)": 19.26,
+            "T3(51x2=1020ms)": 48.03,
+            "T4(51x3=1530ms)": 0.53
+          },
+          "release": {
+            "T0(11x1=110ms)": 42.65,
+            "T1(25x1=250ms)": 0.0,
+            "T2(51x1=510ms)": 13.63,
+            "T3(51x2=1020ms)": 43.54,
+            "T4(51x3=1530ms)": 0.19
+          },
+          "staccato": {
+            "T0(11x1=110ms)": 37.92,
+            "T1(25x1=250ms)": 0.0,
+            "T2(51x1=510ms)": 15.08,
+            "T3(51x2=1020ms)": 46.74,
+            "T4(51x3=1530ms)": 0.26
+          },
+          "spiccato": {
+            "T0(11x1=110ms)": 46.86,
+            "T1(25x1=250ms)": 0.0,
+            "T2(51x1=510ms)": 2.75,
+            "T3(51x2=1020ms)": 49.73,
+            "T4(51x3=1530ms)": 0.66
+          }
+        }
+      },
+      "legato": {
+        "global": {
+          "T0(11x1=110ms)": 34.69,
+          "T1(25x1=250ms)": 4.71,
+          "T2(51x1=510ms)": 3.0,
+          "T3(51x2=1020ms)": 45.08,
+          "T4(51x3=1530ms)": 12.52
+        },
+        "by_class": {
+          "sustained": {
+            "T0(11x1=110ms)": 33.74,
+            "T1(25x1=250ms)": 5.05,
+            "T2(51x1=510ms)": 1.85,
+            "T3(51x2=1020ms)": 47.18,
+            "T4(51x3=1530ms)": 12.18
+          },
+          "bow_change": {
+            "T0(11x1=110ms)": 38.67,
+            "T1(25x1=250ms)": 3.26,
+            "T2(51x1=510ms)": 7.85,
+            "T3(51x2=1020ms)": 36.23,
+            "T4(51x3=1530ms)": 13.98
+          }
+        }
+      }
+    }
+  },
+  "rwc": {
+    "total_active_frames": 1083700,
+    "tonal": {
+      "accuracy": 0.8927,
+      "macro_f1": 0.7811,
+      "weighted_f1": 0.9126,
+      "macro_precision": 0.7651,
+      "macro_recall": 0.8916,
+      "per_class": {
+        "none": {
+          "accuracy": 0.8934,
+          "support": 948715
+        },
+        "pizzicato": {
+          "accuracy": 0.8726,
+          "support": 80947
+        },
+        "harmonics": {
+          "accuracy": 0.9087,
+          "support": 54038
+        }
+      }
+    },
+    "articulation": {
+      "accuracy": 0.9584,
+      "macro_f1": 0.6578,
+      "weighted_f1": 0.9495,
+      "macro_precision": 0.7832,
+      "macro_recall": 0.6134,
+      "per_class": {
+        "none": {
+          "accuracy": 0.9927,
+          "support": 1034731
+        },
+        "spiccato": {
+          "accuracy": 0.2341,
+          "support": 48969
+        }
+      }
+    },
+    "legato": {
+      "accuracy": 0.9782,
+      "macro_f1": 0.7738,
+      "weighted_f1": 0.9794,
+      "macro_precision": 0.7474,
+      "macro_recall": 0.8071,
+      "per_class": {
+        "sustained": {
+          "accuracy": 0.9861,
+          "support": 1059896
+        },
+        "bow_change": {
+          "accuracy": 0.6281,
+          "support": 23804
+        }
+      }
+    },
+    "gate_distribution": {
+      "tonal": {
+        "global": {
+          "T0(11x1=110ms)": 52.46,
+          "T1(25x1=250ms)": 45.39,
+          "T2(51x1=510ms)": 0.0,
+          "T3(51x2=1020ms)": 2.15,
+          "T4(51x3=1530ms)": 0.0
+        },
+        "by_class": {
+          "none": {
+            "T0(11x1=110ms)": 47.96,
+            "T1(25x1=250ms)": 51.17,
+            "T2(51x1=510ms)": 0.0,
+            "T3(51x2=1020ms)": 0.87,
+            "T4(51x3=1530ms)": 0.0
+          },
+          "pizzicato": {
+            "T0(11x1=110ms)": 82.18,
+            "T1(25x1=250ms)": 6.87,
+            "T2(51x1=510ms)": 0.0,
+            "T3(51x2=1020ms)": 10.95,
+            "T4(51x3=1530ms)": 0.0
+          },
+          "harmonics": {
+            "T0(11x1=110ms)": 86.89,
+            "T1(25x1=250ms)": 1.72,
+            "T2(51x1=510ms)": 0.0,
+            "T3(51x2=1020ms)": 11.39,
+            "T4(51x3=1530ms)": 0.0
+          }
+        }
+      },
+      "articulation": {
+        "global": {
+          "T0(11x1=110ms)": 28.25,
+          "T1(25x1=250ms)": 0.0,
+          "T2(51x1=510ms)": 29.8,
+          "T3(51x2=1020ms)": 41.92,
+          "T4(51x3=1530ms)": 0.03
+        },
+        "by_class": {
+          "none": {
+            "T0(11x1=110ms)": 27.27,
+            "T1(25x1=250ms)": 0.0,
+            "T2(51x1=510ms)": 31.04,
+            "T3(51x2=1020ms)": 41.66,
+            "T4(51x3=1530ms)": 0.03
+          },
+          "spiccato": {
+            "T0(11x1=110ms)": 48.76,
+            "T1(25x1=250ms)": 0.0,
+            "T2(51x1=510ms)": 3.67,
+            "T3(51x2=1020ms)": 47.55,
+            "T4(51x3=1530ms)": 0.02
+          }
+        }
+      },
+      "legato": {
+        "global": {
+          "T0(11x1=110ms)": 30.49,
+          "T1(25x1=250ms)": 3.5,
+          "T2(51x1=510ms)": 1.24,
+          "T3(51x2=1020ms)": 60.3,
+          "T4(51x3=1530ms)": 4.47
+        },
+        "by_class": {
+          "sustained": {
+            "T0(11x1=110ms)": 30.0,
+            "T1(25x1=250ms)": 3.26,
+            "T2(51x1=510ms)": 1.22,
+            "T3(51x2=1020ms)": 61.08,
+            "T4(51x3=1530ms)": 4.43
+          },
+          "bow_change": {
+            "T0(11x1=110ms)": 52.22,
+            "T1(25x1=250ms)": 14.07,
+            "T2(51x1=510ms)": 1.88,
+            "T3(51x2=1020ms)": 25.82,
+            "T4(51x3=1530ms)": 6.0
+          }
+        }
+      }
+    }
+  }
+}

@@ -22,7 +22,9 @@ MANUAL_CKPT="${3:-}"
 
 RWC_H5="/mnt/hdd/rwc_processed_data.h5"
 HDF5S_DIR="${WORKSPACE}/hdf5s/viotech"
-SPLIT="test"
+SPLIT="validation"
+RESULTS_DIR="${WORKSPACE}/results/ablation_expert_composition"
+mkdir -p "$RESULTS_DIR"
 
 resolve_experiment() {
     local exp="$1"
@@ -95,11 +97,25 @@ run_eval() {
     echo "  Device     : ${DEVICE}"
     echo "============================================"
 
+    # Print best checkpoint info
+    python3 -c "
+import torch, json
+ckpt = torch.load('${CHECKPOINT}', map_location='cpu', weights_only=False)
+it = ckpt.get('iteration', 'N/A')
+bm = ckpt.get('best_metric', 'N/A')
+bv = ckpt.get('best_metric_val', None)
+bv_str = f'{bv:.6f}' if bv is not None else 'N/A'
+print(f'  Best step     : {it}')
+print(f'  Best metric   : {bm} = {bv_str}')
+"
+
     local EXTRA_ARGS=""
     [ -n "$EXPERT_MASK" ] && EXTRA_ARGS+=" --fmoe_expert_mask=${EXPERT_MASK}"
 
     local RWC_ARGS=""
     [ -f "$RWC_H5" ] && RWC_ARGS="--rwc_h5_path $RWC_H5 --rwc_split all"
+
+    local JSON_OUT="${RESULTS_DIR}/${exp}.json"
 
     cd "${WORKSPACE}/piano_transcription"
 
@@ -114,12 +130,14 @@ run_eval() {
         --fmoe_spectral_expert=${SPECTRAL} \
         --fmoe_shared_gate=0 \
         --fmoe_uniform_routing=0 \
+        --output_json "$JSON_OUT" \
         $EXTRA_ARGS \
         $RWC_ARGS
 
     echo ""
     echo "--------------------------------------------"
     echo "  ${exp}: done (${CKPT_TYPE} checkpoint)"
+    echo "  Results → ${JSON_OUT}"
     echo "--------------------------------------------"
 }
 
@@ -130,8 +148,38 @@ if [ "$EXPERIMENT" = "all" ]; then
              only_onset only_note only_phrase; do
         run_eval "$e"
     done
+
+    # Merge individual JSONs into a summary
+    SUMMARY="${RESULTS_DIR}/summary.json"
+    python3 -c "
+import json, glob, os
+results = {}
+for f in sorted(glob.glob('${RESULTS_DIR}/*.json')):
+    name = os.path.splitext(os.path.basename(f))[0]
+    if name == 'summary':
+        continue
+    with open(f) as fp:
+        results[name] = json.load(fp)
+with open('${SUMMARY}', 'w') as fp:
+    json.dump(results, fp, indent=2, ensure_ascii=False)
+print(f'Summary saved to ${SUMMARY}')
+print()
+# Print comparison table
+header = f'{\"Experiment\":<15s} {\"Step\":>6s}  {\"Tonal Acc\":>9s} {\"Tonal F1\":>9s} {\"Artic Acc\":>9s} {\"Artic F1\":>9s} {\"Legato Acc\":>10s} {\"Legato F1\":>10s}'
+print(header)
+print('-' * len(header))
+for name, data in results.items():
+    step = data.get('checkpoint', {}).get('iteration', '?')
+    vio = data.get('viotech', {})
+    t = vio.get('tonal', {})
+    a = vio.get('articulation', {})
+    l = vio.get('legato', {})
+    print(f'{name:<15s} {str(step):>6s}  {t.get(\"accuracy\",0):9.4f} {t.get(\"macro_f1\",0):9.4f} {a.get(\"accuracy\",0):9.4f} {a.get(\"macro_f1\",0):9.4f} {l.get(\"accuracy\",0):10.4f} {l.get(\"macro_f1\",0):10.4f}')
+"
+
     echo ""
     echo "======== All expert composition evaluations complete ========"
+    echo "Results dir: ${RESULTS_DIR}/"
 else
     run_eval "$EXPERIMENT"
 fi
