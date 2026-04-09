@@ -419,6 +419,61 @@ class FrameMultiScaleMoEHead(nn.Module):
         return F.softmax(masked_logits, dim=-1)
 
 
+class FrameDirectHead(nn.Module):
+    """Direct CRNN features → classification heads, no MoE routing.
+
+    Drop-in replacement for FrameMultiScaleMoEHead with the same forward
+    signature and return format, so the rest of the pipeline is unchanged.
+    Used to ablate whether temporal-expert MoE adds value over a plain MLP.
+    """
+
+    def __init__(self, cfg: FrameMultiScaleMoEConfig = None):
+        super().__init__()
+        cfg = cfg or FrameMultiScaleMoEConfig()
+        D = cfg.feat_dim
+        H = cfg.expert_hidden
+        S = cfg.shared_dim
+        C = cfg.cue_dim
+        self.use_cues = cfg.use_cues
+
+        cue_total = 3 * C if self.use_cues else 0
+        if self.use_cues:
+            self.onset_proj = nn.Linear(1, C)
+            self.offset_proj = nn.Linear(1, C)
+            self.frame_proj = nn.Linear(1, C)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(D + cue_total, H),
+            nn.GELU(),
+            nn.Dropout(cfg.expert_dropout),
+            nn.Linear(H, S),
+        )
+
+        self.ln_tonal = nn.LayerNorm(S)
+        self.ln_artic = nn.LayerNorm(S)
+        self.ln_legato = nn.LayerNorm(S)
+        self.tonal_head = nn.Linear(S, cfg.num_tonal_classes)
+        self.artic_head = nn.Linear(S, cfg.num_artic_classes)
+        self.legato_head = nn.Linear(S, 1)
+
+    def forward(self, features, onset_prob, offset_prob, frame_prob,
+                logmel=None, conv2d_map=None):
+        parts = [features]
+        if self.use_cues:
+            parts.append(F.gelu(self.onset_proj(onset_prob)))
+            parts.append(F.gelu(self.offset_proj(offset_prob)))
+            parts.append(F.gelu(self.frame_proj(frame_prob)))
+        h = self.mlp(torch.cat(parts, dim=-1))
+
+        tonal_logits = self.tonal_head(F.relu(self.ln_tonal(h)))
+        artic_logits = self.artic_head(F.relu(self.ln_artic(h)))
+        legato_prob = torch.sigmoid(self.legato_head(F.relu(self.ln_legato(h))))
+
+        return (tonal_logits, artic_logits, legato_prob,
+                None, None, None,
+                [], [], [])
+
+
 # ---------------------------------------------------------------------------
 # Losses — frame-level with active-mask
 # ---------------------------------------------------------------------------
@@ -511,7 +566,7 @@ def frame_moe_technique_losses(output_dict, target_dict, device=None, focal_gamm
     aux_tonal_list = output_dict.get('fmoe_aux_tonal')
     aux_artic_list = output_dict.get('fmoe_aux_artic')
     aux_legato_list = output_dict.get('fmoe_aux_legato')
-    if aux_tonal_list is not None and 'tonal_technique' in target_dict:
+    if aux_tonal_list and 'tonal_technique' in target_dict:
         E = len(aux_tonal_list)
         expert_losses = []
         for e in range(E):

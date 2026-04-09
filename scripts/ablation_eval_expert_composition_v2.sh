@@ -10,7 +10,7 @@
 #   bash scripts/ablation_eval_expert_composition_v2.sh all [device]
 #   bash scripts/ablation_eval_expert_composition_v2.sh <id> [device] <checkpoint>
 
-set -euo pipefail
+# set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -30,6 +30,8 @@ mkdir -p "$RESULTS_DIR"
 
 resolve_experiment() {
     local exp="$1"
+    DIRECT_HEAD=0
+    HIERARCHICAL=0
     case "$exp" in
         baseline)    TAG="ablation_fmoe_openstring_baseline_e012";         EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
         full)        TAG="ablation_fmoe_openstring_full_e0123_spectral";   EXPERT_MASK="0,1,2,3"; SPECTRAL=1 ;;
@@ -39,6 +41,11 @@ resolve_experiment() {
         only_onset)  TAG="ablation_fmoe_openstring_only_onset_e0";         EXPERT_MASK="0";     SPECTRAL=0 ;;
         only_note)   TAG="ablation_fmoe_openstring_only_note_e1";          EXPERT_MASK="1";     SPECTRAL=0 ;;
         only_phrase) TAG="ablation_fmoe_openstring_only_phrase_e2";        EXPERT_MASK="2";     SPECTRAL=0 ;;
+        tech0.1)     TAG="ablation_fmoe_tech0.1_baseline_e012";           EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
+        detach_cues) TAG="ablation_fmoe_tech0.1_detach_cues_e012";        EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
+        freeze_trans) TAG="ablation_fmoe_tech0.1_freeze_trans_e012";      EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
+        no_moe)      TAG="ablation_fmoe_tech0.1_no_moe_direct";           EXPERT_MASK="0,1,2"; SPECTRAL=0; DIRECT_HEAD=1 ;;
+        hierarchical) TAG="ablation_fmoe_tech0.1_hierarchical";           EXPERT_MASK="";      SPECTRAL=0; HIERARCHICAL=1 ;;
         *)
             echo "Unknown experiment: $exp"
             return 1 ;;
@@ -112,6 +119,8 @@ print(f'  Best metric   : {bm} = {bv_str}')
 
     local EXTRA_ARGS=""
     [ -n "$EXPERT_MASK" ] && EXTRA_ARGS+=" --fmoe_expert_mask=${EXPERT_MASK}"
+    [ "$DIRECT_HEAD" = "1" ] && EXTRA_ARGS+=" --fmoe_direct_head=1"
+    [ "$HIERARCHICAL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical=1"
 
     local RWC_ARGS=""
     [ -f "$RWC_H5" ] && RWC_ARGS="--rwc_h5_path $RWC_H5 --rwc_split all"
@@ -148,7 +157,8 @@ if [ "$EXPERIMENT" = "all" ]; then
     echo "Running v2 evaluation for all expert composition experiments..."
     echo ""
     for e in baseline full no_onset no_note no_phrase \
-             only_onset only_note only_phrase; do
+             only_onset only_note only_phrase \
+             detach_cues freeze_trans no_moe hierarchical; do
         run_eval "$e"
     done
 

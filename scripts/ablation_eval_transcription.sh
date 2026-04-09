@@ -39,6 +39,9 @@ resolve_experiment() {
         only_onset)  TAG="ablation_fmoe_openstring_only_onset_e0"       ;;
         only_note)   TAG="ablation_fmoe_openstring_only_note_e1"        ;;
         only_phrase) TAG="ablation_fmoe_openstring_only_phrase_e2"      ;;
+        detach_cues)  TAG="ablation_fmoe_tech0.1_detach_cues_e012"     ;;
+        freeze_trans) TAG="ablation_fmoe_tech0.1_freeze_trans_e012"  ;;
+        no_moe)       TAG="ablation_fmoe_tech0.1_no_moe_direct"     ;;
         *)
             echo "Unknown experiment: $exp"
             return 1 ;;

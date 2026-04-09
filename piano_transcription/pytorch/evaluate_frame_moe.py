@@ -229,6 +229,7 @@ def evaluate(args):
     fps = config.frames_per_second
     segment_seconds = config.segment_seconds
 
+    fmoe_hierarchical = bool(getattr(args, 'fmoe_hierarchical', 0))
     fmoe_spectral = bool(getattr(args, 'fmoe_spectral_expert', 1))
     fmoe_mask_str = getattr(args, 'fmoe_expert_mask', None)
     fmoe_expert_mask = (
@@ -248,40 +249,48 @@ def evaluate(args):
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=False)
     state = checkpoint['model']
 
-    # Auto-detect legacy vs unified cue mode from checkpoint weights.
-    # Legacy mode (temporal_experts=None default): E0=P+C=144, E1=P+C=144, E2=P+3C=176
-    # Unified mode: all temporal experts = P+3C=176
-    if fmoe_temporal_experts is None and fmoe_use_cues:
-        _e0_key = 'frame_moe_head.experts.0.net.0.weight'
-        if _e0_key in state:
-            _ckpt_in = state[_e0_key].shape[1]
-            _P, _C = 128, 16   # proj_dim, cue_dim defaults
-            _first_eid = min(fmoe_expert_mask) if fmoe_expert_mask else 0
-            _legacy_dims = {0: _P + _C, 1: _P + _C, 2: _P + 3 * _C}
-            _legacy_expected = _legacy_dims.get(_first_eid, _P + 3 * _C)
-            if _ckpt_in != _legacy_expected and _ckpt_in == _P + 3 * _C:
-                fmoe_temporal_experts = ((11, 1), (51, 1), (51, 3))
-                print(f'Auto-detected: checkpoint trained with unified cues, '
-                      f'setting temporal_experts={fmoe_temporal_experts}')
+    if fmoe_hierarchical:
+        from hierarchical_frame import FrameHierarchicalConfig
+        frame_moe_cfg = FrameHierarchicalConfig(use_cues=fmoe_use_cues)
+        print(f'Frame-MoE mode: hierarchical (soft coarse-to-fine)')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    else:
+        # Auto-detect legacy vs unified cue mode from checkpoint weights.
+        if fmoe_temporal_experts is None and fmoe_use_cues:
+            _e0_key = 'frame_moe_head.experts.0.net.0.weight'
+            if _e0_key in state:
+                _ckpt_in = state[_e0_key].shape[1]
+                _P, _C = 128, 16
+                _first_eid = min(fmoe_expert_mask) if fmoe_expert_mask else 0
+                _legacy_dims = {0: _P + _C, 1: _P + _C, 2: _P + 3 * _C}
+                _legacy_expected = _legacy_dims.get(_first_eid, _P + 3 * _C)
+                if _ckpt_in != _legacy_expected and _ckpt_in == _P + 3 * _C:
+                    fmoe_temporal_experts = ((11, 1), (51, 1), (51, 3))
+                    print(f'Auto-detected: checkpoint trained with unified cues, '
+                          f'setting temporal_experts={fmoe_temporal_experts}')
 
-    _fmoe_kw = dict(
-        use_spectral_expert=fmoe_spectral,
-        expert_mask=fmoe_expert_mask,
-        shared_gate=bool(getattr(args, 'fmoe_shared_gate', 0)),
-        uniform_routing=bool(getattr(args, 'fmoe_uniform_routing', 0)),
-        temporal_experts=fmoe_temporal_experts,
-        use_cues=fmoe_use_cues,
-    )
-    fmoe_top_k = getattr(args, 'fmoe_top_k', None)
-    if fmoe_top_k is not None:
-        _fmoe_kw['top_k'] = fmoe_top_k
-    frame_moe_cfg = FrameMultiScaleMoEConfig(**_fmoe_kw)
-    print(f'Frame-MoE spectral expert: {fmoe_spectral}')
-    print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
-    print(f'Frame-MoE temporal experts: {fmoe_temporal_experts}')
-    print(f'Frame-MoE use cues: {fmoe_use_cues}')
-    print(f'Frame-MoE shared gate: {_fmoe_kw["shared_gate"]}')
-    print(f'Frame-MoE uniform routing: {_fmoe_kw["uniform_routing"]}')
+        _fmoe_kw = dict(
+            use_spectral_expert=fmoe_spectral,
+            expert_mask=fmoe_expert_mask,
+            shared_gate=bool(getattr(args, 'fmoe_shared_gate', 0)),
+            uniform_routing=bool(getattr(args, 'fmoe_uniform_routing', 0)),
+            temporal_experts=fmoe_temporal_experts,
+            use_cues=fmoe_use_cues,
+        )
+        fmoe_top_k = getattr(args, 'fmoe_top_k', None)
+        if fmoe_top_k is not None:
+            _fmoe_kw['top_k'] = fmoe_top_k
+        frame_moe_cfg = FrameMultiScaleMoEConfig(**_fmoe_kw)
+        print(f'Frame-MoE spectral expert: {fmoe_spectral}')
+        print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
+        print(f'Frame-MoE temporal experts: {fmoe_temporal_experts}')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+        print(f'Frame-MoE shared gate: {_fmoe_kw["shared_gate"]}')
+        print(f'Frame-MoE uniform routing: {_fmoe_kw["uniform_routing"]}')
+
+    fmoe_direct_head = bool(getattr(args, 'fmoe_direct_head', 0))
+    print(f'Frame-MoE direct head: {fmoe_direct_head}')
+    print(f'Frame-MoE hierarchical: {fmoe_hierarchical}')
 
     model = Regress_onset_offset_frame_velocity_CRNN(
         frames_per_second=fps,
@@ -293,6 +302,8 @@ def evaluate(args):
         predict_technique_moe_zone_pt=False,
         predict_technique_frame_moe=True,
         frame_moe_config=frame_moe_cfg,
+        direct_head=fmoe_direct_head,
+        hierarchical_head=fmoe_hierarchical,
     )
 
     # Extract checkpoint metadata
@@ -312,7 +323,7 @@ def evaluate(args):
     print(f'Model loaded from {args.checkpoint_path}')
 
     global EXPERT_NAMES
-    if hasattr(model, 'frame_moe_head'):
+    if hasattr(model, 'frame_moe_head') and hasattr(model.frame_moe_head, '_expert_names'):
         EXPERT_NAMES = model.frame_moe_head._expert_names
 
     output_json_path = getattr(args, 'output_json', None)
@@ -576,6 +587,10 @@ if __name__ == '__main__':
                         help='Temporal experts as "k1:d1,k2:d2,..." (must match training)')
     parser.add_argument('--fmoe_no_cues', type=int, default=0, choices=[0, 1],
                         help='Disable cues (must match training config)')
+    parser.add_argument('--fmoe_direct_head', type=int, default=0, choices=[0, 1],
+                        help='Use direct MLP head instead of MoE (must match training)')
+    parser.add_argument('--fmoe_hierarchical', type=int, default=0, choices=[0, 1],
+                        help='Use soft hierarchical head (must match training)')
     parser.add_argument('--output_json', type=str, default=None,
                         help='Path to save evaluation results as JSON')
     parser.add_argument('--technique_label_config', type=str, default=None,

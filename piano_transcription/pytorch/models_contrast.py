@@ -22,7 +22,8 @@ from note_slicer import NoteSlicer, NoteSlicerConfig
 from moe_technique import MoETechniqueHead, MoEConfig
 from moe_zone_specialist import ZoneMoETechniqueHead, ZoneMoEConfig
 from moe_zone_pertask import PerTaskZoneMoEHead, PerTaskZoneMoEConfig
-from moe_frame_multiscale import FrameMultiScaleMoEHead, FrameMultiScaleMoEConfig
+from moe_frame_multiscale import FrameMultiScaleMoEHead, FrameMultiScaleMoEConfig, FrameDirectHead
+from hierarchical_frame import FrameHierarchicalHead, FrameHierarchicalConfig
 
 
 def init_layer(layer):
@@ -226,8 +227,12 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                  predict_technique_frame_moe=False,
                  moe_config=None, zone_moe_config=None,
                  pt_zone_moe_config=None, frame_moe_config=None,
-                 slicer_config=None):
+                 slicer_config=None,
+                 detach_cues=False,
+                 direct_head=False,
+                 hierarchical_head=False):
         super(Regress_onset_offset_frame_velocity_CRNN, self).__init__()
+        self.detach_cues = detach_cues
 
         sample_rate = 16000
         window_size = 2048
@@ -306,8 +311,17 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
             self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
                 classes_num, midfeat, momentum,
                 output_features=True)
-            self.frame_moe_head = FrameMultiScaleMoEHead(
-                frame_moe_config or FrameMultiScaleMoEConfig())
+            if hierarchical_head:
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config, FrameHierarchicalConfig)
+                        else FrameHierarchicalConfig())
+                self.frame_moe_head = FrameHierarchicalHead(_cfg)
+            elif direct_head:
+                _cfg = frame_moe_config or FrameMultiScaleMoEConfig()
+                self.frame_moe_head = FrameDirectHead(_cfg)
+            else:
+                _cfg = frame_moe_config or FrameMultiScaleMoEConfig()
+                self.frame_moe_head = FrameMultiScaleMoEHead(_cfg)
 
         self.reg_onset_gru = nn.GRU(input_size=88 * 2, hidden_size=256, num_layers=1, 
             bias=True, batch_first=True, dropout=0., bidirectional=True)
@@ -479,9 +493,16 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
             _, fmoe_features = self.technique_acoustic_frame_moe(logmel)
             # fmoe_features: (B, T, 512)
             # Transcription structural cues — max-pool across pitches
-            onset_cue = output_dict['reg_onset_output'].max(dim=-1, keepdim=True)[0]   # (B, T, 1)
-            offset_cue = output_dict['reg_offset_output'].max(dim=-1, keepdim=True)[0]
-            frame_cue = output_dict['frame_output'].max(dim=-1, keepdim=True)[0]
+            reg_onset = output_dict['reg_onset_output']
+            reg_offset = output_dict['reg_offset_output']
+            frame = output_dict['frame_output']
+            if self.detach_cues:
+                reg_onset = reg_onset.detach()
+                reg_offset = reg_offset.detach()
+                frame = frame.detach()
+            onset_cue = reg_onset.max(dim=-1, keepdim=True)[0]   # (B, T, 1)
+            offset_cue = reg_offset.max(dim=-1, keepdim=True)[0]
+            frame_cue = frame.max(dim=-1, keepdim=True)[0]
 
             (fm_t, fm_a, fm_l, fg_t, fg_a, fg_l,
              aux_t, aux_a, aux_l) = self.frame_moe_head(

@@ -20,6 +20,9 @@
 #   only_onset    : expert 0 only
 #   only_note     : expert 1 only
 #   only_phrase   : expert 2 only
+#   detach_cues   : baseline + detach onset/offset/frame cues (technique loss doesn't update transcription)
+#   freeze_trans  : baseline + fully frozen transcription backbone (only technique branch trains)
+#   no_moe        : baseline topology but plain MLP head instead of MoE experts (ablates MoE routing)
 #   all           : run all above sequentially
 
 set -euo pipefail
@@ -43,12 +46,20 @@ run_train() {
     local TAG="$1"
     local EXPERT_MASK="$2"
     local SPECTRAL="${3:-0}"
+    local DETACH_CUES="${4:-0}"
+    local FREEZE_TRANS="${5:-0}"
+    local DIRECT_HEAD="${6:-0}"
+    local HIERARCHICAL="${7:-0}"
 
     echo ""
     echo "========================================================"
     echo "  Expert Ablation v3(openstring) (unified cues): ${TAG}"
     echo "  Experts:          ${EXPERT_MASK}"
     echo "  Spectral:         ${SPECTRAL}"
+    echo "  Detach cues:      ${DETACH_CUES}"
+    echo "  Freeze trans:     ${FREEZE_TRANS}"
+    echo "  Direct head:      ${DIRECT_HEAD}"
+    echo "  Hierarchical:     ${HIERARCHICAL}"
     echo "  Temporal experts: ${TEMPORAL_EXPERTS}"
     echo "  Device:           ${DEVICE}"
     echo "  Seed:             ${SEED}"
@@ -56,6 +67,10 @@ run_train() {
 
     local EXTRA_ARGS=""
     [ -n "$EXPERT_MASK" ] && EXTRA_ARGS+=" --fmoe_expert_mask=${EXPERT_MASK}"
+    [ "$DETACH_CUES" = "1" ] && EXTRA_ARGS+=" --fmoe_detach_cues=1"
+    [ "$FREEZE_TRANS" = "1" ] && EXTRA_ARGS+=" --freeze_transcription=1"
+    [ "$DIRECT_HEAD" = "1" ] && EXTRA_ARGS+=" --fmoe_direct_head=1"
+    [ "$HIERARCHICAL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical=1"
 
     cd "${WORKSPACE}/piano_transcription"
 
@@ -109,16 +124,22 @@ case "$EXPERIMENT" in
     only_onset)  run_train "only_onset_e0"           "0"         0 ;;
     only_note)   run_train "only_note_e1"            "1"         0 ;;
     only_phrase) run_train "only_phrase_e2"           "2"         0 ;;
+    detach_cues)  run_train "detach_cues_e012"        "0,1,2"     0  1  0  0 ;;
+    freeze_trans) run_train "freeze_trans_e012"      "0,1,2"     0  0  1  0 ;;
+    no_moe)       run_train "no_moe_direct"          "0,1,2"     0  0  0  1  0 ;;
+    hierarchical) run_train "hierarchical"          ""          0  0  0  0  1 ;;
     all)
         for e in baseline full no_onset no_note no_phrase \
-                 only_onset only_note only_phrase; do
+                 only_onset only_note only_phrase \
+                 detach_cues freeze_trans no_moe hierarchical; do
             bash "$0" "$e" "$DEVICE"
         done
         ;;
     *)
         echo "Unknown experiment: $EXPERIMENT"
         echo "Available: baseline full no_onset no_note no_phrase"
-        echo "           only_onset only_note only_phrase all"
+        echo "           only_onset only_note only_phrase"
+        echo "           detach_cues freeze_trans no_moe hierarchical all"
         exit 1
         ;;
 esac

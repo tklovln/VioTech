@@ -130,6 +130,12 @@ def train(args):
             for pair in fmoe_temporal_str.split(',')
         )
     fmoe_use_cues = not bool(getattr(args, 'fmoe_no_cues', 0))
+    fmoe_detach_cues = bool(getattr(args, 'fmoe_detach_cues', 0))
+    freeze_transcription = bool(getattr(args, 'freeze_transcription', 0))
+    if freeze_transcription:
+        fmoe_detach_cues = True
+    fmoe_direct_head = bool(getattr(args, 'fmoe_direct_head', 0))
+    fmoe_hierarchical = bool(getattr(args, 'fmoe_hierarchical', 0))
     focal_gamma = getattr(args, 'focal_gamma', 0.0)
     print('technique weight: ', technique_weight)
     print('technique MoE weight: ', technique_moe_weight)
@@ -144,6 +150,10 @@ def train(args):
     print('Frame-MoE aux weight: ', fmoe_aux_weight)
     print('Frame-MoE temporal experts: ', fmoe_temporal_experts)
     print('Frame-MoE use cues: ', fmoe_use_cues)
+    print('Frame-MoE detach cues: ', fmoe_detach_cues)
+    print('Freeze transcription: ', freeze_transcription)
+    print('Frame-MoE direct head: ', fmoe_direct_head)
+    print('Frame-MoE hierarchical head: ', fmoe_hierarchical)
     print('focal loss gamma: ', focal_gamma)
     if dataset == 'viotech_mixed_mosavpt':
         print('mosavpt_ratio: ', getattr(args, 'mosavpt_ratio', 0.5))
@@ -221,17 +231,21 @@ def train(args):
     # Model
     Model = eval(model_type)
     if technique_frame_moe_weight > 0:
-        _fmoe_kwargs = dict(
-            use_spectral_expert=fmoe_spectral_expert,
-            expert_mask=fmoe_expert_mask,
-            shared_gate=fmoe_shared_gate,
-            uniform_routing=fmoe_uniform_routing,
-            temporal_experts=fmoe_temporal_experts,
-            use_cues=fmoe_use_cues,
-        )
-        if fmoe_top_k is not None:
-            _fmoe_kwargs['top_k'] = fmoe_top_k
-        frame_moe_cfg = FrameMultiScaleMoEConfig(**_fmoe_kwargs)
+        if fmoe_hierarchical:
+            from hierarchical_frame import FrameHierarchicalConfig
+            frame_moe_cfg = FrameHierarchicalConfig(use_cues=fmoe_use_cues)
+        else:
+            _fmoe_kwargs = dict(
+                use_spectral_expert=fmoe_spectral_expert,
+                expert_mask=fmoe_expert_mask,
+                shared_gate=fmoe_shared_gate,
+                uniform_routing=fmoe_uniform_routing,
+                temporal_experts=fmoe_temporal_experts,
+                use_cues=fmoe_use_cues,
+            )
+            if fmoe_top_k is not None:
+                _fmoe_kwargs['top_k'] = fmoe_top_k
+            frame_moe_cfg = FrameMultiScaleMoEConfig(**_fmoe_kwargs)
     else:
         frame_moe_cfg = None
     model = Model(
@@ -244,6 +258,9 @@ def train(args):
         predict_technique_moe_zone_pt=(technique_moe_zone_pt_weight > 0),
         predict_technique_frame_moe=(technique_frame_moe_weight > 0),
         frame_moe_config=frame_moe_cfg,
+        detach_cues=fmoe_detach_cues,
+        direct_head=fmoe_direct_head,
+        hierarchical_head=fmoe_hierarchical,
     )
     aux_contrast_onset_model = nn.Linear(512, 128)
     aux_contrast_offset_model = nn.Linear(512, 128)
@@ -909,6 +926,18 @@ def train(args):
                 p.requires_grad = True
             else:
                 p.requires_grad = False
+    if freeze_transcription:
+        for p in model.parameters():
+            p.requires_grad = False
+        for sub in ['technique_acoustic_frame_moe', 'frame_moe_head',
+                     'technique_acoustic', 'technique_head',
+                     'technique_acoustic_moe', 'moe_technique_head']:
+            if hasattr(model, sub):
+                for p in getattr(model, sub).parameters():
+                    p.requires_grad = True
+        n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n_total = sum(p.numel() for p in model.parameters())
+        logging.info(f'Freeze transcription: {n_train}/{n_total} params trainable')
     params = [p for p in model.parameters() if p.requires_grad]
     if use_aux_contrast_model:
         params += list(aux_contrast_onset_model.parameters())
@@ -1394,6 +1423,18 @@ if __name__ == '__main__':
              '(e.g. "11:1,25:1,51:1,51:2,51:3" for 5-expert). None = legacy 3-expert')
     parser_train.add_argument('--fmoe_no_cues', type=int, default=0, choices=[0, 1],
         help='Disable transcription cue injection (1) vs use cues (0)')
+    parser_train.add_argument('--fmoe_detach_cues', type=int, default=0, choices=[0, 1],
+        help='Detach transcription cues from gradient graph (1) so technique loss '
+             'does not update the transcription backbone (0 = end-to-end, default)')
+    parser_train.add_argument('--freeze_transcription', type=int, default=0, choices=[0, 1],
+        help='Freeze entire transcription backbone (1); only technique branch is trained. '
+             'Implies --fmoe_detach_cues=1 (0 = default, all params trainable)')
+    parser_train.add_argument('--fmoe_direct_head', type=int, default=0, choices=[0, 1],
+        help='Replace MoE expert routing with a plain MLP head (1) to ablate '
+             'whether temporal experts add value (0 = MoE, default)')
+    parser_train.add_argument('--fmoe_hierarchical', type=int, default=0, choices=[0, 1],
+        help='Use soft hierarchical head (1): binary detection then fine-grained '
+             'classification, instead of MoE routing (0 = MoE, default)')
     parser_train.add_argument('--focal_gamma', type=float, default=0.0,
         help='Focal loss gamma for technique CE losses (0 = standard CE, 2.0 recommended)')
     parser_train.add_argument('--patience', type=int, default=0,
