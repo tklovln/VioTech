@@ -22,8 +22,16 @@ from note_slicer import NoteSlicer, NoteSlicerConfig
 from moe_technique import MoETechniqueHead, MoEConfig
 from moe_zone_specialist import ZoneMoETechniqueHead, ZoneMoEConfig
 from moe_zone_pertask import PerTaskZoneMoEHead, PerTaskZoneMoEConfig
-from moe_frame_multiscale import FrameMultiScaleMoEHead, FrameMultiScaleMoEConfig, FrameDirectHead
-from hierarchical_frame import FrameHierarchicalHead, FrameHierarchicalConfig
+from moe_frame_multiscale import (FrameMultiScaleMoEHead, FrameMultiScaleMoEConfig,
+                                  FrameDirectHead, FrameMultiCRNNMoEHead,
+                                  FrameMultiCRNNMoEConfig)
+from hierarchical_frame import (FrameHierarchicalHead, FrameHierarchicalConfig,
+                               FrameHierarchicalMultiLevelHead,
+                               FrameHierarchicalMultiLevelConfig,
+                               FrameHierarchicalMoEHead,
+                               FrameHierarchicalMoEConfig)
+from moe_crnn_backbone import (CRNNMoEBackbone, CRNNMoEConfig,
+                               SharedCNNMoEBackbone, SharedCNNMoEConfig)
 
 
 def init_layer(layer):
@@ -230,7 +238,12 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                  slicer_config=None,
                  detach_cues=False,
                  direct_head=False,
-                 hierarchical_head=False):
+                 hierarchical_head=False,
+                 hierarchical_multilevel_head=False,
+                 hierarchical_moe_head=False,
+                 multi_crnn_head=False,
+                 crnn_moe_head=False,
+                 shared_crnn_moe_head=False):
         super(Regress_onset_offset_frame_velocity_CRNN, self).__init__()
         self.detach_cues = detach_cues
 
@@ -308,18 +321,57 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Frame-level Multi-Scale MoE technique branch (end-to-end, no GT boundaries)
         if self.predict_technique_frame_moe:
-            self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
-                classes_num, midfeat, momentum,
-                output_features=True)
-            if hierarchical_head:
+            if shared_crnn_moe_head:
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config, SharedCNNMoEConfig)
+                        else SharedCNNMoEConfig())
+                self.frame_moe_head = SharedCNNMoEBackbone(_cfg)
+            elif crnn_moe_head:
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config, CRNNMoEConfig)
+                        else CRNNMoEConfig())
+                self.frame_moe_head = CRNNMoEBackbone(_cfg)
+            elif multi_crnn_head:
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config, FrameMultiCRNNMoEConfig)
+                        else FrameMultiCRNNMoEConfig())
+                self.frame_moe_head = FrameMultiCRNNMoEHead(_cfg)
+            elif hierarchical_multilevel_head:
+                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                    classes_num, midfeat, momentum,
+                    output_features=True, output_conv2d_map=True)
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config,
+                                      FrameHierarchicalMultiLevelConfig)
+                        else FrameHierarchicalMultiLevelConfig())
+                self.frame_moe_head = FrameHierarchicalMultiLevelHead(_cfg)
+            elif hierarchical_moe_head:
+                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                    classes_num, midfeat, momentum,
+                    output_features=True)
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config,
+                                      FrameHierarchicalMoEConfig)
+                        else FrameHierarchicalMoEConfig())
+                self.frame_moe_head = FrameHierarchicalMoEHead(_cfg)
+            elif hierarchical_head:
+                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                    classes_num, midfeat, momentum,
+                    output_features=True)
                 _cfg = (frame_moe_config
                         if isinstance(frame_moe_config, FrameHierarchicalConfig)
                         else FrameHierarchicalConfig())
                 self.frame_moe_head = FrameHierarchicalHead(_cfg)
             elif direct_head:
+                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                    classes_num, midfeat, momentum,
+                    output_features=True)
                 _cfg = frame_moe_config or FrameMultiScaleMoEConfig()
                 self.frame_moe_head = FrameDirectHead(_cfg)
             else:
+                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                    classes_num, midfeat, momentum,
+                    output_features=True)
                 _cfg = frame_moe_config or FrameMultiScaleMoEConfig()
                 self.frame_moe_head = FrameMultiScaleMoEHead(_cfg)
 
@@ -490,8 +542,15 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Frame-level Multi-Scale MoE technique branch (end-to-end)
         if self.predict_technique_frame_moe:
-            _, fmoe_features = self.technique_acoustic_frame_moe(logmel)
-            # fmoe_features: (B, T, 512)
+            fmoe_conv2d_map = None
+            if hasattr(self, 'technique_acoustic_frame_moe'):
+                crnn = self.technique_acoustic_frame_moe
+                if crnn.output_conv2d_map:
+                    _, fmoe_features, fmoe_conv2d_map = crnn(logmel)
+                else:
+                    _, fmoe_features = crnn(logmel)
+            else:
+                fmoe_features = None  # multi-CRNN head has its own backbone
             # Transcription structural cues — max-pool across pitches
             reg_onset = output_dict['reg_onset_output']
             reg_offset = output_dict['reg_offset_output']
@@ -507,7 +566,7 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
             (fm_t, fm_a, fm_l, fg_t, fg_a, fg_l,
              aux_t, aux_a, aux_l) = self.frame_moe_head(
                 fmoe_features, onset_cue, offset_cue, frame_cue,
-                logmel=logmel)
+                logmel=logmel, conv2d_map=fmoe_conv2d_map)
 
             output_dict['fmoe_tonal_logits'] = fm_t
             output_dict['fmoe_artic_logits'] = fm_a

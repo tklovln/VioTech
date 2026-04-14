@@ -23,6 +23,11 @@
 #   detach_cues   : baseline + detach onset/offset/frame cues (technique loss doesn't update transcription)
 #   freeze_trans  : baseline + fully frozen transcription backbone (only technique branch trains)
 #   no_moe        : baseline topology but plain MLP head instead of MoE experts (ablates MoE routing)
+#   multi_crnn    : shared CNN + per-expert GRU branches (onset=fwd-1L, note=bi-2L, phrase=bi-2L)
+#   hier_multilevel : hierarchical + multi-level CNN features for detector (GRU + conv2d local)
+#   hier_moe      : hierarchical L1 (binary detector) + MoE L2 (4 expert fine-grained classifiers)
+#   crnn_moe      : 8 heterogeneous lightweight CRNNs as experts (multi-scale temporal kernels)
+#   shared_crnn_moe : shared CNN (blocks 1-3) + 8 per-expert block4 & GRU late branches
 #   all           : run all above sequentially
 
 set -euo pipefail
@@ -50,6 +55,11 @@ run_train() {
     local FREEZE_TRANS="${5:-0}"
     local DIRECT_HEAD="${6:-0}"
     local HIERARCHICAL="${7:-0}"
+    local MULTI_CRNN="${8:-0}"
+    local CRNN_MOE="${9:-0}"
+    local SHARED_CRNN_MOE="${10:-0}"
+    local HIER_MULTILEVEL="${11:-0}"
+    local HIER_MOE="${12:-0}"
 
     echo ""
     echo "========================================================"
@@ -60,6 +70,11 @@ run_train() {
     echo "  Freeze trans:     ${FREEZE_TRANS}"
     echo "  Direct head:      ${DIRECT_HEAD}"
     echo "  Hierarchical:     ${HIERARCHICAL}"
+    echo "  Multi-CRNN:       ${MULTI_CRNN}"
+    echo "  CRNN-MoE:         ${CRNN_MOE}"
+    echo "  Shared-CRNN-MoE:  ${SHARED_CRNN_MOE}"
+    echo "  Hier-MultiLevel:  ${HIER_MULTILEVEL}"
+    echo "  Hier-MoE:         ${HIER_MOE}"
     echo "  Temporal experts: ${TEMPORAL_EXPERTS}"
     echo "  Device:           ${DEVICE}"
     echo "  Seed:             ${SEED}"
@@ -71,6 +86,11 @@ run_train() {
     [ "$FREEZE_TRANS" = "1" ] && EXTRA_ARGS+=" --freeze_transcription=1"
     [ "$DIRECT_HEAD" = "1" ] && EXTRA_ARGS+=" --fmoe_direct_head=1"
     [ "$HIERARCHICAL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical=1"
+    [ "$MULTI_CRNN" = "1" ] && EXTRA_ARGS+=" --fmoe_multi_crnn=1"
+    [ "$CRNN_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_crnn_moe=1 --frame_moe_balance_coeff=0.005"
+    [ "$SHARED_CRNN_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_shared_crnn_moe=1 --frame_moe_balance_coeff=0.005 --fmoe_aux_weight=0.1"
+    [ "$HIER_MULTILEVEL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_multilevel=1"
+    [ "$HIER_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_moe=1 --fmoe_aux_weight=0.1"
 
     cd "${WORKSPACE}/piano_transcription"
 
@@ -83,7 +103,7 @@ run_train() {
         --loss_type='regress_onset_offset_frame_velocity_bce' \
         --augmentation='aug' \
         --max_note_shift=2 \
-        --batch_size=4 \
+        --batch_size=8 \
         --learning_rate=5e-4 \
         --reduce_iteration=1000 \
         --resume_iteration=0 \
@@ -100,7 +120,7 @@ run_train() {
         --technique_moe_weight=0.0 \
         --technique_moe_zone_weight=0.0 \
         --technique_moe_zone_pt_weight=0.0 \
-        --technique_frame_moe_weight=0.1 \
+        --technique_frame_moe_weight=1 \
         --frame_moe_balance_coeff=0.001 \
         --fmoe_spectral_expert=${SPECTRAL} \
         --fmoe_temporal_experts="${TEMPORAL_EXPERTS}" \
@@ -128,10 +148,17 @@ case "$EXPERIMENT" in
     freeze_trans) run_train "freeze_trans_e012"      "0,1,2"     0  0  1  0 ;;
     no_moe)       run_train "no_moe_direct"          "0,1,2"     0  0  0  1  0 ;;
     hierarchical) run_train "hierarchical"          ""          0  0  0  0  1 ;;
+    multi_crnn)   run_train "multi_crnn_e012"      "0,1,2"     0  0  0  0  0  1  0 ;;
+    crnn_moe)     run_train "crnn_moe_e01234567"  ""          0  0  0  0  0  0  1  0 ;;
+    shared_crnn_moe) run_train "shared_crnn_moe_e01234567" "" 0  0  0  0  0  0  0  1 ;;
+    hier_multilevel) run_train "hier_multilevel" ""  0  0  0  0  0  0  0  0  1  0 ;;
+    hier_moe)        run_train "hier_moe"        ""  0  0  0  0  0  0  0  0  0  1 ;;
     all)
         for e in baseline full no_onset no_note no_phrase \
                  only_onset only_note only_phrase \
-                 detach_cues freeze_trans no_moe hierarchical; do
+                 detach_cues freeze_trans no_moe hierarchical \
+                 hier_multilevel hier_moe \
+                 multi_crnn crnn_moe shared_crnn_moe; do
             bash "$0" "$e" "$DEVICE"
         done
         ;;
@@ -139,7 +166,8 @@ case "$EXPERIMENT" in
         echo "Unknown experiment: $EXPERIMENT"
         echo "Available: baseline full no_onset no_note no_phrase"
         echo "           only_onset only_note only_phrase"
-        echo "           detach_cues freeze_trans no_moe hierarchical all"
+        echo "           detach_cues freeze_trans no_moe hierarchical hier_multilevel hier_moe"
+        echo "           multi_crnn crnn_moe shared_crnn_moe all"
         exit 1
         ;;
 esac

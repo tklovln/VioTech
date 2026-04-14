@@ -32,6 +32,11 @@ resolve_experiment() {
     local exp="$1"
     DIRECT_HEAD=0
     HIERARCHICAL=0
+    MULTI_CRNN=0
+    CRNN_MOE=0
+    SHARED_CRNN_MOE=0
+    HIER_MULTILEVEL=0
+    HIER_MOE=0
     case "$exp" in
         baseline)    TAG="ablation_fmoe_openstring_baseline_e012";         EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
         full)        TAG="ablation_fmoe_openstring_full_e0123_spectral";   EXPERT_MASK="0,1,2,3"; SPECTRAL=1 ;;
@@ -46,6 +51,11 @@ resolve_experiment() {
         freeze_trans) TAG="ablation_fmoe_tech0.1_freeze_trans_e012";      EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
         no_moe)      TAG="ablation_fmoe_tech0.1_no_moe_direct";           EXPERT_MASK="0,1,2"; SPECTRAL=0; DIRECT_HEAD=1 ;;
         hierarchical) TAG="ablation_fmoe_tech0.1_hierarchical";           EXPERT_MASK="";      SPECTRAL=0; HIERARCHICAL=1 ;;
+        multi_crnn)  TAG="ablation_fmoe_tech0.1_multi_crnn_e012";         EXPERT_MASK="0,1,2"; SPECTRAL=0; MULTI_CRNN=1 ;;
+        crnn_moe)    TAG="ablation_fmoe_tech0.1_crnn_moe_e01234567";      EXPERT_MASK="";      SPECTRAL=0; CRNN_MOE=1 ;;
+        shared_crnn_moe) TAG="ablation_fmoe_tech0.1_shared_crnn_moe_e01234567"; EXPERT_MASK=""; SPECTRAL=0; SHARED_CRNN_MOE=1 ;;
+        hier_multilevel) TAG="ablation_fmoe_tech0.1_hier_multilevel"; EXPERT_MASK=""; SPECTRAL=0; HIER_MULTILEVEL=1 ;;
+        hier_moe)        TAG="ablation_fmoe_tech0.1_hier_moe";        EXPERT_MASK=""; SPECTRAL=0; HIER_MOE=1 ;;
         *)
             echo "Unknown experiment: $exp"
             return 1 ;;
@@ -54,19 +64,24 @@ resolve_experiment() {
 
 find_checkpoint() {
     local tag="$1"
-    local ckpt_dir="${WORKSPACE}/checkpoints/main_contrast/${tag}/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2/batch_size=4"
+    local base="${WORKSPACE}/checkpoints/main_contrast/${tag}/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2"
 
-    if [ -f "${ckpt_dir}/best_model.pth" ]; then
-        echo "${ckpt_dir}/best_model.pth"
-        return 0
-    fi
+    local ckpt_dir
+    for bs in 4 8; do
+        ckpt_dir="${base}/batch_size=${bs}"
 
-    local latest
-    latest=$(ls -t "${ckpt_dir}"/*_iterations.pth 2>/dev/null | head -1)
-    if [ -n "$latest" ]; then
-        echo "$latest"
-        return 0
-    fi
+        if [ -f "${ckpt_dir}/best_model.pth" ]; then
+            echo "${ckpt_dir}/best_model.pth"
+            return 0
+        fi
+
+        local latest
+        latest=$(ls -t "${ckpt_dir}"/*_iterations.pth 2>/dev/null | head -1)
+        if [ -n "$latest" ]; then
+            echo "$latest"
+            return 0
+        fi
+    done
 
     echo ""
     return 1
@@ -121,6 +136,11 @@ print(f'  Best metric   : {bm} = {bv_str}')
     [ -n "$EXPERT_MASK" ] && EXTRA_ARGS+=" --fmoe_expert_mask=${EXPERT_MASK}"
     [ "$DIRECT_HEAD" = "1" ] && EXTRA_ARGS+=" --fmoe_direct_head=1"
     [ "$HIERARCHICAL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical=1"
+    [ "$MULTI_CRNN" = "1" ] && EXTRA_ARGS+=" --fmoe_multi_crnn=1"
+    [ "$CRNN_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_crnn_moe=1"
+    [ "$SHARED_CRNN_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_shared_crnn_moe=1"
+    [ "$HIER_MULTILEVEL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_multilevel=1"
+    [ "$HIER_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_moe=1"
 
     local RWC_ARGS=""
     [ -f "$RWC_H5" ] && RWC_ARGS="--rwc_h5_path $RWC_H5 --rwc_split all"
@@ -158,7 +178,9 @@ if [ "$EXPERIMENT" = "all" ]; then
     echo ""
     for e in baseline full no_onset no_note no_phrase \
              only_onset only_note only_phrase \
-             detach_cues freeze_trans no_moe hierarchical; do
+             detach_cues freeze_trans no_moe hierarchical \
+             hier_multilevel hier_moe \
+             multi_crnn crnn_moe shared_crnn_moe; do
         run_eval "$e"
     done
 

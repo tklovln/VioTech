@@ -136,6 +136,11 @@ def train(args):
         fmoe_detach_cues = True
     fmoe_direct_head = bool(getattr(args, 'fmoe_direct_head', 0))
     fmoe_hierarchical = bool(getattr(args, 'fmoe_hierarchical', 0))
+    fmoe_hierarchical_multilevel = bool(getattr(args, 'fmoe_hierarchical_multilevel', 0))
+    fmoe_hierarchical_moe = bool(getattr(args, 'fmoe_hierarchical_moe', 0))
+    fmoe_multi_crnn = bool(getattr(args, 'fmoe_multi_crnn', 0))
+    fmoe_crnn_moe = bool(getattr(args, 'fmoe_crnn_moe', 0))
+    fmoe_shared_crnn_moe = bool(getattr(args, 'fmoe_shared_crnn_moe', 0))
     focal_gamma = getattr(args, 'focal_gamma', 0.0)
     print('technique weight: ', technique_weight)
     print('technique MoE weight: ', technique_moe_weight)
@@ -154,6 +159,11 @@ def train(args):
     print('Freeze transcription: ', freeze_transcription)
     print('Frame-MoE direct head: ', fmoe_direct_head)
     print('Frame-MoE hierarchical head: ', fmoe_hierarchical)
+    print('Frame-MoE hierarchical multilevel: ', fmoe_hierarchical_multilevel)
+    print('Frame-MoE hierarchical MoE: ', fmoe_hierarchical_moe)
+    print('Frame-MoE multi-CRNN: ', fmoe_multi_crnn)
+    print('Frame-MoE CRNN-MoE: ', fmoe_crnn_moe)
+    print('Frame-MoE Shared-CRNN-MoE: ', fmoe_shared_crnn_moe)
     print('focal loss gamma: ', focal_gamma)
     if dataset == 'viotech_mixed_mosavpt':
         print('mosavpt_ratio: ', getattr(args, 'mosavpt_ratio', 0.5))
@@ -231,7 +241,41 @@ def train(args):
     # Model
     Model = eval(model_type)
     if technique_frame_moe_weight > 0:
-        if fmoe_hierarchical:
+        if fmoe_shared_crnn_moe:
+            from moe_crnn_backbone import SharedCNNMoEConfig
+            _sc_kwargs = dict(
+                expert_mask=fmoe_expert_mask,
+                use_cues=fmoe_use_cues,
+            )
+            if fmoe_top_k is not None:
+                _sc_kwargs['top_k'] = fmoe_top_k
+            frame_moe_cfg = SharedCNNMoEConfig(**_sc_kwargs)
+        elif fmoe_crnn_moe:
+            from moe_crnn_backbone import CRNNMoEConfig
+            _cm_kwargs = dict(
+                expert_mask=fmoe_expert_mask,
+                use_cues=fmoe_use_cues,
+            )
+            if fmoe_top_k is not None:
+                _cm_kwargs['top_k'] = fmoe_top_k
+            frame_moe_cfg = CRNNMoEConfig(**_cm_kwargs)
+        elif fmoe_multi_crnn:
+            from moe_frame_multiscale import FrameMultiCRNNMoEConfig
+            _mc_kwargs = dict(
+                use_spectral_expert=fmoe_spectral_expert,
+                expert_mask=fmoe_expert_mask,
+                use_cues=fmoe_use_cues,
+            )
+            if fmoe_top_k is not None:
+                _mc_kwargs['top_k'] = fmoe_top_k
+            frame_moe_cfg = FrameMultiCRNNMoEConfig(**_mc_kwargs)
+        elif fmoe_hierarchical_multilevel:
+            from hierarchical_frame import FrameHierarchicalMultiLevelConfig
+            frame_moe_cfg = FrameHierarchicalMultiLevelConfig(use_cues=fmoe_use_cues)
+        elif fmoe_hierarchical_moe:
+            from hierarchical_frame import FrameHierarchicalMoEConfig
+            frame_moe_cfg = FrameHierarchicalMoEConfig(use_cues=fmoe_use_cues)
+        elif fmoe_hierarchical:
             from hierarchical_frame import FrameHierarchicalConfig
             frame_moe_cfg = FrameHierarchicalConfig(use_cues=fmoe_use_cues)
         else:
@@ -261,6 +305,11 @@ def train(args):
         detach_cues=fmoe_detach_cues,
         direct_head=fmoe_direct_head,
         hierarchical_head=fmoe_hierarchical,
+        hierarchical_multilevel_head=fmoe_hierarchical_multilevel,
+        hierarchical_moe_head=fmoe_hierarchical_moe,
+        multi_crnn_head=fmoe_multi_crnn,
+        crnn_moe_head=fmoe_crnn_moe,
+        shared_crnn_moe_head=fmoe_shared_crnn_moe,
     )
     aux_contrast_onset_model = nn.Linear(512, 128)
     aux_contrast_offset_model = nn.Linear(512, 128)
@@ -1435,6 +1484,21 @@ if __name__ == '__main__':
     parser_train.add_argument('--fmoe_hierarchical', type=int, default=0, choices=[0, 1],
         help='Use soft hierarchical head (1): binary detection then fine-grained '
              'classification, instead of MoE routing (0 = MoE, default)')
+    parser_train.add_argument('--fmoe_hierarchical_multilevel', type=int, default=0, choices=[0, 1],
+        help='Hierarchical + multi-level features (1): detector uses both GRU '
+             'and CNN local features for improved transient detection')
+    parser_train.add_argument('--fmoe_hierarchical_moe', type=int, default=0, choices=[0, 1],
+        help='Hierarchical L1 + MoE L2 (1): binary detector + MoE fine-grained '
+             'classifier with per-task routing')
+    parser_train.add_argument('--fmoe_multi_crnn', type=int, default=0, choices=[0, 1],
+        help='Use multi-CRNN MoE (1): shared CNN + per-expert GRU branches '
+             'instead of shared CRNN + Conv1D experts (0 = standard, default)')
+    parser_train.add_argument('--fmoe_crnn_moe', type=int, default=0, choices=[0, 1],
+        help='Use CRNN-as-Expert MoE (1): 8 heterogeneous lightweight CRNNs '
+             'with multi-scale temporal kernels as experts (0 = standard, default)')
+    parser_train.add_argument('--fmoe_shared_crnn_moe', type=int, default=0, choices=[0, 1],
+        help='Use Shared-CNN MoE (1): shared CNN blocks 1-3 + per-expert block4 '
+             '& GRU branches with multi-scale temporal kernels (0 = standard, default)')
     parser_train.add_argument('--focal_gamma', type=float, default=0.0,
         help='Focal loss gamma for technique CE losses (0 = standard CE, 2.0 recommended)')
     parser_train.add_argument('--patience', type=int, default=0,

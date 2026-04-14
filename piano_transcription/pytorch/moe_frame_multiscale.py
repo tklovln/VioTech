@@ -419,6 +419,286 @@ class FrameMultiScaleMoEHead(nn.Module):
         return F.softmax(masked_logits, dim=-1)
 
 
+@dataclass
+class FrameMultiCRNNMoEConfig:
+    """Configuration for multi-CRNN MoE (shared CNN + per-expert GRUs)."""
+    expert_hidden: int = 256
+    shared_dim: int = 128
+    num_tonal_classes: int = 4
+    num_artic_classes: int = 4
+    cue_dim: int = 16
+    spectral_proj_dim: int = 128
+    gate_dropout: float = 0.0
+    expert_dropout: float = 0.2
+    balance_loss_coeff: float = 0.001
+    top_k: int = 2
+    use_spectral_expert: bool = False
+    use_cues: bool = True
+    expert_mask: tuple = None
+
+
+class FrameMultiCRNNMoEHead(nn.Module):
+    """Multi-CRNN MoE: shared CNN backbone with per-expert GRU branches.
+
+    Replaces the shared-CRNN + post-hoc-Conv1D design with structurally
+    different GRU experts that process the same CNN features independently:
+
+      Expert 0 — Onset:  1-layer forward-only GRU (causal, 256-dim output)
+      Expert 1 — Note:   2-layer BiGRU (512-dim output)
+      Expert 2 — Phrase:  2-layer BiGRU (512-dim output, separate weights)
+      Expert 3 — Spectral (optional): dedicated 2D CNN on logmel
+
+    The shared CNN processes logmel once; each GRU branch then independently
+    learns temporal dynamics suited to its scale.  This breaks the information
+    bottleneck of funnelling all experts through one shared GRU.
+
+    Forward signature matches FrameMultiScaleMoEHead for drop-in replacement.
+    """
+
+    _GRU_DEFS = [
+        # (hidden_size, num_layers, bidirectional, label)
+        (256, 1, False, 'Onset(fwd-GRU-1L)'),
+        (256, 2, True,  'Note(bi-GRU-2L)'),
+        (256, 2, True,  'Phrase(bi-GRU-2L)'),
+    ]
+
+    def __init__(self, cfg: FrameMultiCRNNMoEConfig = None):
+        super().__init__()
+        cfg = cfg or FrameMultiCRNNMoEConfig()
+        self.cfg = cfg
+        self.use_spectral = cfg.use_spectral_expert
+        self.use_cues = cfg.use_cues
+        P = cfg.shared_dim   # 128
+        C = cfg.cue_dim      # 16
+        SP = cfg.spectral_proj_dim
+
+        N_temporal = len(self._GRU_DEFS)
+        N_total = N_temporal + (1 if self.use_spectral else 0)
+
+        if cfg.expert_mask is not None:
+            mask = tuple(sorted(cfg.expert_mask))
+        else:
+            mask = tuple(range(N_total))
+        spectral_idx = N_temporal
+        if spectral_idx in mask and not self.use_spectral:
+            raise ValueError(
+                f"Expert {spectral_idx} (spectral) requires use_spectral_expert=True")
+        self.active_expert_ids = list(mask)
+
+        self._expert_names = {}
+        for i, (_, _, _, label) in enumerate(self._GRU_DEFS):
+            self._expert_names[i] = label
+        if self.use_spectral:
+            self._expert_names[spectral_idx] = 'Spectral'
+
+        # --- Shared CNN backbone (same arch as AcousticModelCRnn8Dropout) ---
+        from models_contrast import ConvBlock, init_gru
+        momentum = 0.01
+        self.conv_block1 = ConvBlock(1, 48, momentum)
+        self.conv_block2 = ConvBlock(48, 64, momentum)
+        self.conv_block3 = ConvBlock(64, 96, momentum)
+        self.conv_block4 = ConvBlock(96, 128, momentum)
+        midfeat = 1792  # 128 × 14
+        fc_dim = 768
+        self.shared_fc = nn.Linear(midfeat, fc_dim, bias=False)
+        self.shared_bn = nn.BatchNorm1d(fc_dim, momentum=momentum)
+        nn.init.xavier_uniform_(self.shared_fc.weight)
+        self.shared_bn.bias.data.fill_(0.)
+        self.shared_bn.weight.data.fill_(1.)
+
+        # --- Per-expert GRU branches ---
+        self.grus = nn.ModuleList()
+        self._gru_out_dims = []
+        for hidden, num_layers, bidirectional, _ in self._GRU_DEFS:
+            gru = nn.GRU(fc_dim, hidden, num_layers=num_layers,
+                         batch_first=True, bidirectional=bidirectional)
+            init_gru(gru)
+            self.grus.append(gru)
+            self._gru_out_dims.append(hidden * (2 if bidirectional else 1))
+
+        # Project each GRU output to P for gate input
+        self.gate_projections = nn.ModuleList([
+            nn.Sequential(nn.Linear(d, P, bias=False), nn.LayerNorm(P), nn.GELU())
+            for d in self._gru_out_dims
+        ])
+
+        # Cue projections
+        cue_total = 3 * C if self.use_cues else 0
+        if self.use_cues:
+            self.onset_proj = nn.Linear(1, C)
+            self.offset_proj = nn.Linear(1, C)
+            self.frame_proj = nn.Linear(1, C)
+
+        # Per-expert input dims: full GRU output + cues
+        _exp_in = {i: self._gru_out_dims[i] + cue_total for i in range(N_temporal)}
+
+        gate_in = N_temporal * P + cue_total
+
+        if self.use_spectral:
+            self.spectral_cnn = _DedicatedSpectralCNN(out_dim=SP)
+            self.feat_proj = nn.Sequential(
+                nn.Linear(self._gru_out_dims[1], P, bias=False),
+                nn.LayerNorm(P),
+                nn.GELU(),
+            )
+            _exp_in[spectral_idx] = SP + P + cue_total
+            gate_in += SP + P
+
+        # Expert MLPs (active experts only)
+        experts = []
+        for eid in self.active_expert_ids:
+            experts.append(_Expert(_exp_in[eid], cfg.expert_hidden,
+                                   cfg.shared_dim, cfg.expert_dropout))
+        self.experts = nn.ModuleList(experts)
+        num_experts = len(experts)
+
+        # Per-task gates
+        gate_hidden = cfg.expert_hidden // 2
+        self.gate_tonal = _Gate(gate_in, num_experts, gate_hidden, cfg.gate_dropout)
+        self.gate_artic = _Gate(gate_in, num_experts, gate_hidden, cfg.gate_dropout)
+        self.gate_legato = _Gate(gate_in, num_experts, gate_hidden, cfg.gate_dropout)
+
+        # Classification heads
+        self.ln_tonal = nn.LayerNorm(cfg.shared_dim)
+        self.ln_artic = nn.LayerNorm(cfg.shared_dim)
+        self.ln_legato = nn.LayerNorm(cfg.shared_dim)
+        self.tonal_head = nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
+        self.artic_head = nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
+        self.legato_head = nn.Linear(cfg.shared_dim, 1)
+
+        # Per-expert auxiliary heads
+        self.aux_tonal_heads = nn.ModuleList([
+            nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
+            for _ in range(num_experts)
+        ])
+        self.aux_artic_heads = nn.ModuleList([
+            nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
+            for _ in range(num_experts)
+        ])
+        self.aux_legato_heads = nn.ModuleList([
+            nn.Linear(cfg.shared_dim, 1)
+            for _ in range(num_experts)
+        ])
+
+    def _get_gate_probs(self, gate_module, x):
+        logits = gate_module(x)
+        num_e = logits.shape[-1]
+        if self.cfg.top_k > 0 and self.cfg.top_k < num_e:
+            return self._top_k_gating(logits, self.cfg.top_k)
+        return F.softmax(logits, dim=-1)
+
+    @staticmethod
+    def _top_k_gating(logits, k):
+        top_vals, top_idx = logits.topk(k, dim=-1)
+        mask = torch.zeros_like(logits).scatter(-1, top_idx, 1.0)
+        masked_logits = logits.masked_fill(mask == 0, float('-inf'))
+        return F.softmax(masked_logits, dim=-1)
+
+    def forward(self, features, onset_prob, offset_prob, frame_prob,
+                logmel=None, conv2d_map=None):
+        """
+        Args:
+            features:    IGNORED (None in multi-CRNN mode; kept for API compat)
+            onset_prob:  (B, T, 1) max-pooled onset probability
+            offset_prob: (B, T, 1) max-pooled offset probability
+            frame_prob:  (B, T, 1) max-pooled frame activity probability
+            logmel:      (B, 1, T, 229) BN-normalised log-mel spectrogram
+        """
+        assert logmel is not None, "FrameMultiCRNNMoEHead requires logmel input"
+
+        # --- Shared CNN ---
+        x = self.conv_block1(logmel, pool_size=(1, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.conv_block2(x, pool_size=(1, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.conv_block3(x, pool_size=(1, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.conv_block4(x, pool_size=(1, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training)
+        # (B, 128, T, 14) → (B, T, 1792)
+        x = x.transpose(1, 2).flatten(2)
+        x = F.relu(self.shared_bn(self.shared_fc(x).transpose(1, 2)).transpose(1, 2))
+        x = F.dropout(x, p=0.5, training=self.training)
+        # x: (B, T, 768)
+
+        # --- Per-expert GRU branches ---
+        gru_outputs = []
+        for gru in self.grus:
+            h, _ = gru(x)
+            h = F.dropout(h, p=0.5, training=self.training)
+            gru_outputs.append(h)
+        T_feat = gru_outputs[0].shape[1]
+
+        # Gate projections (all GRU outputs, even masked ones, feed the gate)
+        gate_parts = [proj(g) for proj, g in zip(self.gate_projections, gru_outputs)]
+
+        # Cue embeddings
+        cue_cat = None
+        if self.use_cues:
+            c_onset = F.gelu(self.onset_proj(onset_prob))
+            c_offset = F.gelu(self.offset_proj(offset_prob))
+            c_frame = F.gelu(self.frame_proj(frame_prob))
+            cue_cat = torch.cat([c_onset, c_offset, c_frame], dim=-1)
+
+        # Spectral features (optional)
+        N_temporal = len(self._GRU_DEFS)
+        s_spec = f_proj = None
+        if self.use_spectral:
+            s_spec = self.spectral_cnn(logmel)
+            T_spec = s_spec.shape[1]
+            if T_spec != T_feat:
+                s_spec = s_spec[:, :T_feat, :] if T_spec > T_feat else \
+                    F.pad(s_spec, (0, 0, 0, T_feat - T_spec))
+            f_proj = self.feat_proj(gru_outputs[1])
+
+        # Build expert inputs for active experts
+        expert_list = []
+        for idx, eid in enumerate(self.active_expert_ids):
+            if eid < N_temporal:
+                parts = [gru_outputs[eid]]
+                if cue_cat is not None:
+                    parts.append(cue_cat)
+                inp = torch.cat(parts, dim=-1)
+            else:
+                parts = [s_spec, f_proj]
+                if cue_cat is not None:
+                    parts.append(cue_cat)
+                inp = torch.cat(parts, dim=-1)
+            expert_list.append(self.experts[idx](inp))
+
+        expert_outs = torch.stack(expert_list, dim=-2)  # (B, T, E, shared_dim)
+
+        # Gate input
+        gate_input_parts = list(gate_parts)
+        if self.use_spectral:
+            gate_input_parts.extend([s_spec, f_proj])
+        if cue_cat is not None:
+            gate_input_parts.append(cue_cat)
+        gate_in = torch.cat(gate_input_parts, dim=-1)
+
+        gp_tonal = self._get_gate_probs(self.gate_tonal, gate_in)
+        gp_artic = self._get_gate_probs(self.gate_artic, gate_in)
+        gp_legato = self._get_gate_probs(self.gate_legato, gate_in)
+
+        def _mix(gp, ln):
+            h = (gp.unsqueeze(-1) * expert_outs).sum(dim=-2)
+            return F.relu(ln(h))
+
+        tonal_logits = self.tonal_head(_mix(gp_tonal, self.ln_tonal))
+        artic_logits = self.artic_head(_mix(gp_artic, self.ln_artic))
+        legato_prob = torch.sigmoid(self.legato_head(_mix(gp_legato, self.ln_legato)))
+
+        # Per-expert auxiliary logits
+        aux_tonal = [h(expert_list[i]) for i, h in enumerate(self.aux_tonal_heads)]
+        aux_artic = [h(expert_list[i]) for i, h in enumerate(self.aux_artic_heads)]
+        aux_legato = [torch.sigmoid(h(expert_list[i]))
+                      for i, h in enumerate(self.aux_legato_heads)]
+
+        return (tonal_logits, artic_logits, legato_prob,
+                gp_tonal, gp_artic, gp_legato,
+                aux_tonal, aux_artic, aux_legato)
+
+
 class FrameDirectHead(nn.Module):
     """Direct CRNN features → classification heads, no MoE routing.
 

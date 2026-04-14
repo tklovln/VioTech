@@ -26,7 +26,7 @@ import numpy as np
 import torch
 
 from models_contrast import Regress_onset_offset_frame_velocity_CRNN
-from moe_frame_multiscale import FrameMultiScaleMoEConfig
+from moe_frame_multiscale import FrameMultiScaleMoEConfig, FrameMultiCRNNMoEConfig
 from pytorch_utils import move_data_to_device
 from data_generator import CustomDataset, CustomTestSampler, collate_fn
 from technique_label_utils import get_technique_labels
@@ -230,6 +230,8 @@ def evaluate(args):
     segment_seconds = config.segment_seconds
 
     fmoe_hierarchical = bool(getattr(args, 'fmoe_hierarchical', 0))
+    fmoe_hierarchical_multilevel = bool(getattr(args, 'fmoe_hierarchical_multilevel', 0))
+    fmoe_hierarchical_moe = bool(getattr(args, 'fmoe_hierarchical_moe', 0))
     fmoe_spectral = bool(getattr(args, 'fmoe_spectral_expert', 1))
     fmoe_mask_str = getattr(args, 'fmoe_expert_mask', None)
     fmoe_expert_mask = (
@@ -249,7 +251,61 @@ def evaluate(args):
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=False)
     state = checkpoint['model']
 
-    if fmoe_hierarchical:
+    fmoe_multi_crnn = bool(getattr(args, 'fmoe_multi_crnn', 0))
+    fmoe_crnn_moe = bool(getattr(args, 'fmoe_crnn_moe', 0))
+    fmoe_shared_crnn_moe = bool(getattr(args, 'fmoe_shared_crnn_moe', 0))
+
+    if fmoe_shared_crnn_moe:
+        from moe_crnn_backbone import SharedCNNMoEConfig
+        _sc_kw = dict(
+            expert_mask=fmoe_expert_mask,
+            use_cues=fmoe_use_cues,
+        )
+        fmoe_top_k = getattr(args, 'fmoe_top_k', None)
+        if fmoe_top_k is not None:
+            _sc_kw['top_k'] = fmoe_top_k
+        frame_moe_cfg = SharedCNNMoEConfig(**_sc_kw)
+        print(f'Frame-MoE mode: Shared-CNN MoE (blocks 1-3 shared + per-expert block4 & GRU)')
+        print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    elif fmoe_crnn_moe:
+        from moe_crnn_backbone import CRNNMoEConfig
+        _cm_kw = dict(
+            expert_mask=fmoe_expert_mask,
+            use_cues=fmoe_use_cues,
+        )
+        fmoe_top_k = getattr(args, 'fmoe_top_k', None)
+        if fmoe_top_k is not None:
+            _cm_kw['top_k'] = fmoe_top_k
+        frame_moe_cfg = CRNNMoEConfig(**_cm_kw)
+        print(f'Frame-MoE mode: CRNN-as-Expert MoE (8 heterogeneous CRNNs)')
+        print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    elif fmoe_multi_crnn:
+        _mc_kw = dict(
+            use_spectral_expert=fmoe_spectral,
+            expert_mask=fmoe_expert_mask,
+            use_cues=fmoe_use_cues,
+        )
+        fmoe_top_k = getattr(args, 'fmoe_top_k', None)
+        if fmoe_top_k is not None:
+            _mc_kw['top_k'] = fmoe_top_k
+        frame_moe_cfg = FrameMultiCRNNMoEConfig(**_mc_kw)
+        print(f'Frame-MoE mode: multi-CRNN (shared CNN + per-expert GRUs)')
+        print(f'Frame-MoE spectral expert: {fmoe_spectral}')
+        print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    elif fmoe_hierarchical_multilevel:
+        from hierarchical_frame import FrameHierarchicalMultiLevelConfig
+        frame_moe_cfg = FrameHierarchicalMultiLevelConfig(use_cues=fmoe_use_cues)
+        print(f'Frame-MoE mode: hierarchical multi-level (GRU + CNN local features)')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    elif fmoe_hierarchical_moe:
+        from hierarchical_frame import FrameHierarchicalMoEConfig
+        frame_moe_cfg = FrameHierarchicalMoEConfig(use_cues=fmoe_use_cues)
+        print(f'Frame-MoE mode: hierarchical L1 + MoE L2')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    elif fmoe_hierarchical:
         from hierarchical_frame import FrameHierarchicalConfig
         frame_moe_cfg = FrameHierarchicalConfig(use_cues=fmoe_use_cues)
         print(f'Frame-MoE mode: hierarchical (soft coarse-to-fine)')
@@ -291,6 +347,11 @@ def evaluate(args):
     fmoe_direct_head = bool(getattr(args, 'fmoe_direct_head', 0))
     print(f'Frame-MoE direct head: {fmoe_direct_head}')
     print(f'Frame-MoE hierarchical: {fmoe_hierarchical}')
+    print(f'Frame-MoE hierarchical multilevel: {fmoe_hierarchical_multilevel}')
+    print(f'Frame-MoE hierarchical MoE: {fmoe_hierarchical_moe}')
+    print(f'Frame-MoE multi-CRNN: {fmoe_multi_crnn}')
+    print(f'Frame-MoE CRNN-MoE: {fmoe_crnn_moe}')
+    print(f'Frame-MoE Shared-CRNN-MoE: {fmoe_shared_crnn_moe}')
 
     model = Regress_onset_offset_frame_velocity_CRNN(
         frames_per_second=fps,
@@ -304,6 +365,11 @@ def evaluate(args):
         frame_moe_config=frame_moe_cfg,
         direct_head=fmoe_direct_head,
         hierarchical_head=fmoe_hierarchical,
+        hierarchical_multilevel_head=fmoe_hierarchical_multilevel,
+        hierarchical_moe_head=fmoe_hierarchical_moe,
+        multi_crnn_head=fmoe_multi_crnn,
+        crnn_moe_head=fmoe_crnn_moe,
+        shared_crnn_moe_head=fmoe_shared_crnn_moe,
     )
 
     # Extract checkpoint metadata
@@ -591,6 +657,16 @@ if __name__ == '__main__':
                         help='Use direct MLP head instead of MoE (must match training)')
     parser.add_argument('--fmoe_hierarchical', type=int, default=0, choices=[0, 1],
                         help='Use soft hierarchical head (must match training)')
+    parser.add_argument('--fmoe_hierarchical_multilevel', type=int, default=0, choices=[0, 1],
+                        help='Hierarchical + multi-level features (must match training)')
+    parser.add_argument('--fmoe_hierarchical_moe', type=int, default=0, choices=[0, 1],
+                        help='Hierarchical L1 + MoE L2 (must match training)')
+    parser.add_argument('--fmoe_multi_crnn', type=int, default=0, choices=[0, 1],
+                        help='Use multi-CRNN MoE (must match training)')
+    parser.add_argument('--fmoe_crnn_moe', type=int, default=0, choices=[0, 1],
+                        help='Use CRNN-as-Expert MoE (must match training)')
+    parser.add_argument('--fmoe_shared_crnn_moe', type=int, default=0, choices=[0, 1],
+                        help='Use Shared-CNN MoE (must match training)')
     parser.add_argument('--output_json', type=str, default=None,
                         help='Path to save evaluation results as JSON')
     parser.add_argument('--technique_label_config', type=str, default=None,
