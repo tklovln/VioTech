@@ -254,4 +254,12 @@ class RWCMoEDataset:
             data_dict['legato'] = legato_roll
             data_dict['frame_roll'] = frame_roll
 
+            if _label_cfg.binary_technique:
+                for flag_name, (src_task, src_id) in \
+                        _label_cfg.binary_flag_sources.items():
+                    if src_task == 'tonal_technique':
+                        data_dict[flag_name] = (tonal_roll == src_id).astype(np.float32)
+                    elif src_task == 'articulation':
+                        data_dict[flag_name] = (artic_roll == src_id).astype(np.float32)
+
         return data_dict

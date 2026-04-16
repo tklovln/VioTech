@@ -122,8 +122,77 @@ class SegmentEvaluator(object):
             statistics['loss_legato'] = legato_loss(_od, _td).item()
 
         # Frame-level Multi-Scale MoE technique losses + per-class accuracy
+        # Binary mode: fmoe_binary_probs is a dict of tensors,
+        # skip the multi-class path and compute binary metrics directly.
+        _binary_flag_names = ['pizzicato', 'harmonic', 'spiccato', 'legato']
+        _fmoe_binary_present = any(
+            f'fmoe_{fn}_prob' in output_dict for fn in _binary_flag_names[:3]
+        )
+        if _fmoe_binary_present:
+            _to = lambda a: torch.from_numpy(a) if isinstance(a, np.ndarray) else a
+            probs_dict = {}
+            for fn in _binary_flag_names:
+                k = f'fmoe_{fn}_prob'
+                if k in output_dict:
+                    probs_dict[fn] = output_dict[k]
+            active_mask = None
+            if 'frame_roll' in output_dict:
+                fr = output_dict['frame_roll']
+                if isinstance(fr, np.ndarray):
+                    active_mask = fr.sum(axis=-1) > 0
+                else:
+                    active_mask = fr.sum(dim=-1) > 0
+
+            total_loss = 0.0
+            for flag_name, prob in probs_dict.items():
+                if isinstance(prob, torch.Tensor):
+                    prob_np = prob.cpu().numpy()
+                else:
+                    prob_np = prob
+                pred = (prob_np.squeeze(-1) > 0.5).astype(np.int64)
+                gt = output_dict.get(flag_name)
+                if gt is None:
+                    continue
+                if isinstance(gt, torch.Tensor):
+                    gt = gt.cpu().numpy()
+                gt_bin = (gt > 0.5).astype(np.int64)
+                T = min(pred.shape[1], gt_bin.shape[1])
+                pred = pred[:, :T]
+                gt_bin = gt_bin[:, :T]
+                if active_mask is not None:
+                    m = active_mask[:, :T]
+                    if isinstance(m, torch.Tensor):
+                        m = m.numpy()
+                    pred_flat = pred[m]
+                    gt_flat = gt_bin[m]
+                else:
+                    pred_flat = pred.flatten()
+                    gt_flat = gt_bin.flatten()
+                if len(gt_flat) > 0:
+                    acc = (pred_flat == gt_flat).mean()
+                    statistics[f'fmoe_{flag_name}_acc'] = float(acc)
+                    pos_mask = gt_flat == 1
+                    n_pos = pos_mask.sum()
+                    if n_pos > 0:
+                        statistics[f'fmoe_{flag_name}_recall'] = float(
+                            (pred_flat[pos_mask] == 1).mean())
+                    neg_mask = gt_flat == 0
+                    n_neg = neg_mask.sum()
+                    if n_neg > 0:
+                        statistics[f'fmoe_{flag_name}_spec'] = float(
+                            (pred_flat[neg_mask] == 0).mean())
+
+                    p_t = _to(gt[:, :T].astype(np.float32))
+                    p_p = _to(prob_np.squeeze(-1)[:, :T])
+                    bce = torch.nn.functional.binary_cross_entropy(
+                        p_p.float(), p_t.float(), reduction='mean')
+                    statistics[f'fmoe_loss_{flag_name}'] = bce.item()
+                    total_loss += bce.item()
+            statistics['fmoe_loss_technique'] = total_loss
+
         _fmoe_present = (
             'fmoe_tonal_logits' in output_dict
+            and output_dict.get('fmoe_tonal_logits') is not None
             and 'tonal_technique' in output_dict
         )
         if _fmoe_present:
@@ -210,8 +279,9 @@ class SegmentEvaluator(object):
 def evaluate_rwc_frame_moe(model, dataloader, device):
     """Frame-level MoE technique evaluation on RWC during training.
 
-    Reports macro F1 and per-technique accuracy for each head
-    (tonal, articulation, legato).
+    Reports macro F1 and per-technique accuracy for each head.
+    Supports both multi-class (tonal/artic/legato) and binary
+    (pizzicato/harmonic/spiccato/legato) modes.
     """
     from sklearn.metrics import f1_score, accuracy_score
 
@@ -219,10 +289,15 @@ def evaluate_rwc_frame_moe(model, dataloader, device):
     TONAL_NAMES = _lcfg.tonal_names
     ARTIC_NAMES = _lcfg.artic_names
     LEGATO_NAMES = {0: 'sustained', 1: 'bow_change'}
+    BINARY_CLS = {0: 'negative', 1: 'positive'}
 
+    _binary_mode = False
     all_tonal_pred, all_tonal_gt = [], []
     all_artic_pred, all_artic_gt = [], []
     all_legato_pred, all_legato_gt = [], []
+    binary_flag_names = ['pizzicato', 'harmonic', 'spiccato', 'legato']
+    all_binary_gt = {n: [] for n in binary_flag_names}
+    all_binary_pred = {n: [] for n in binary_flag_names}
     total_frames = 0
 
     was_training = model.training
@@ -234,51 +309,79 @@ def evaluate_rwc_frame_moe(model, dataloader, device):
 
             output_dict = model(batch_data_dict['waveform'])
 
-            if 'fmoe_tonal_logits' not in output_dict:
+            is_binary = 'fmoe_binary_probs' in output_dict
+            if is_binary:
+                _binary_mode = True
+            elif 'fmoe_tonal_logits' not in output_dict:
                 continue
 
             if 'frame_roll' in batch_data_dict:
                 active = (batch_data_dict['frame_roll'].sum(dim=-1) > 0)
             else:
-                B, T = output_dict['fmoe_tonal_logits'].shape[:2]
-                active = torch.ones(B, T, dtype=torch.bool, device=device)
+                if is_binary:
+                    first_p = next(iter(output_dict['fmoe_binary_probs'].values()))
+                    B, T_p = first_p.shape[:2]
+                else:
+                    B, T_p = output_dict['fmoe_tonal_logits'].shape[:2]
+                active = torch.ones(B, T_p, dtype=torch.bool, device=device)
 
-            tonal_logits = output_dict['fmoe_tonal_logits']
-            artic_logits = output_dict['fmoe_artic_logits']
-            legato_prob = output_dict['fmoe_legato_prob'].squeeze(-1)
+            if is_binary:
+                probs_dict = output_dict['fmoe_binary_probs']
+                first_p = next(iter(probs_dict.values()))
+                T = min(first_p.shape[1], active.shape[1])
+                active = active[:, :T]
+                B = active.shape[0]
+                for b in range(B):
+                    m = active[b].cpu().numpy().astype(bool)
+                    n_active = int(m.sum())
+                    if n_active == 0:
+                        continue
+                    total_frames += n_active
+                    for name in binary_flag_names:
+                        prob = probs_dict[name][b, :T].squeeze(-1)
+                        pred = (prob > 0.5).long().cpu().numpy()[m]
+                        all_binary_pred[name].extend(pred)
+                        gt_tensor = batch_data_dict.get(name)
+                        if gt_tensor is not None:
+                            gt = (gt_tensor[b, :T] > 0.5).long().cpu().numpy()[m]
+                            all_binary_gt[name].extend(gt)
+            else:
+                tonal_logits = output_dict['fmoe_tonal_logits']
+                artic_logits = output_dict['fmoe_artic_logits']
+                legato_prob = output_dict['fmoe_legato_prob'].squeeze(-1)
 
-            T = min(tonal_logits.shape[1], active.shape[1])
+                T = min(tonal_logits.shape[1], active.shape[1])
 
-            tonal_pred = tonal_logits[:, :T].argmax(dim=-1)
-            artic_pred = artic_logits[:, :T].argmax(dim=-1)
-            legato_pred = (legato_prob[:, :T] > 0.5).long()
-            active = active[:, :T]
+                tonal_pred = tonal_logits[:, :T].argmax(dim=-1)
+                artic_pred = artic_logits[:, :T].argmax(dim=-1)
+                legato_pred = (legato_prob[:, :T] > 0.5).long()
+                active = active[:, :T]
 
-            tonal_gt = batch_data_dict.get('tonal_technique')
-            artic_gt = batch_data_dict.get('articulation')
-            legato_gt = batch_data_dict.get('legato')
+                tonal_gt = batch_data_dict.get('tonal_technique')
+                artic_gt = batch_data_dict.get('articulation')
+                legato_gt = batch_data_dict.get('legato')
 
-            if tonal_gt is None:
-                continue
-
-            tonal_gt = tonal_gt[:, :T]
-            artic_gt = artic_gt[:, :T]
-            legato_gt = (legato_gt[:, :T] > 0.5).long()
-
-            B = active.shape[0]
-            for b in range(B):
-                m = active[b].cpu().numpy().astype(bool)
-                n_active = int(m.sum())
-                if n_active == 0:
+                if tonal_gt is None:
                     continue
 
-                all_tonal_pred.extend(tonal_pred[b].cpu().numpy()[m])
-                all_tonal_gt.extend(tonal_gt[b].cpu().numpy()[m])
-                all_artic_pred.extend(artic_pred[b].cpu().numpy()[m])
-                all_artic_gt.extend(artic_gt[b].cpu().numpy()[m])
-                all_legato_pred.extend(legato_pred[b].cpu().numpy()[m])
-                all_legato_gt.extend(legato_gt[b].cpu().numpy()[m])
-                total_frames += n_active
+                tonal_gt = tonal_gt[:, :T]
+                artic_gt = artic_gt[:, :T]
+                legato_gt = (legato_gt[:, :T] > 0.5).long()
+
+                B = active.shape[0]
+                for b in range(B):
+                    m = active[b].cpu().numpy().astype(bool)
+                    n_active = int(m.sum())
+                    if n_active == 0:
+                        continue
+
+                    all_tonal_pred.extend(tonal_pred[b].cpu().numpy()[m])
+                    all_tonal_gt.extend(tonal_gt[b].cpu().numpy()[m])
+                    all_artic_pred.extend(artic_pred[b].cpu().numpy()[m])
+                    all_artic_gt.extend(artic_gt[b].cpu().numpy()[m])
+                    all_legato_pred.extend(legato_pred[b].cpu().numpy()[m])
+                    all_legato_gt.extend(legato_gt[b].cpu().numpy()[m])
+                    total_frames += n_active
 
     if was_training:
         model.train()
@@ -302,12 +405,19 @@ def evaluate_rwc_frame_moe(model, dataloader, device):
                 stats[f'{prefix}_acc_{name}'] = float((pred_arr[mask] == cls_id).mean())
         return stats
 
-    statistics.update(_compute_head_stats(
-        all_tonal_gt, all_tonal_pred, TONAL_NAMES, 'rwc_tonal'))
-    statistics.update(_compute_head_stats(
-        all_artic_gt, all_artic_pred, ARTIC_NAMES, 'rwc_artic'))
-    statistics.update(_compute_head_stats(
-        all_legato_gt, all_legato_pred, LEGATO_NAMES, 'rwc_legato'))
+    if _binary_mode:
+        for name in binary_flag_names:
+            if all_binary_gt[name]:
+                statistics.update(_compute_head_stats(
+                    all_binary_gt[name], all_binary_pred[name],
+                    BINARY_CLS, f'rwc_{name}'))
+    else:
+        statistics.update(_compute_head_stats(
+            all_tonal_gt, all_tonal_pred, TONAL_NAMES, 'rwc_tonal'))
+        statistics.update(_compute_head_stats(
+            all_artic_gt, all_artic_pred, ARTIC_NAMES, 'rwc_artic'))
+        statistics.update(_compute_head_stats(
+            all_legato_gt, all_legato_pred, LEGATO_NAMES, 'rwc_legato'))
 
     for key in statistics:
         if isinstance(statistics[key], float):

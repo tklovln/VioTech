@@ -28,6 +28,12 @@
 #   hier_moe      : hierarchical L1 (binary detector) + MoE L2 (4 expert fine-grained classifiers)
 #   crnn_moe      : 8 heterogeneous lightweight CRNNs as experts (multi-scale temporal kernels)
 #   shared_crnn_moe : shared CNN (blocks 1-3) + 8 per-expert block4 & GRU late branches
+#   binary_baseline : 4 binary heads (pizz/harm/spic/legato), experts 0+1+2
+#   binary_full     : 4 binary heads, experts 0+1+2+3 (+ spectral)
+#   binary_no_moe   : 4 binary heads, direct MLP (no MoE routing)
+#   binary_detach_cues : 4 binary heads + detach cues, experts 0+1+2
+#   mert_baseline   : frozen MERT-v1-330M backbone, experts 0+1+2
+#   mert_binary     : frozen MERT-v1-330M backbone + binary heads, experts 0+1+2
 #   all           : run all above sequentially
 
 set -euo pipefail
@@ -46,6 +52,7 @@ LABEL_CFG="${WORKSPACE}/config/technique_label_config_reduced.json"
 
 SEED=2026
 TEMPORAL_EXPERTS="11:1,51:1,51:3"
+BINARY_LABEL_CFG="${WORKSPACE}/config/technique_label_config_binary.json"
 
 run_train() {
     local TAG="$1"
@@ -60,6 +67,9 @@ run_train() {
     local SHARED_CRNN_MOE="${10:-0}"
     local HIER_MULTILEVEL="${11:-0}"
     local HIER_MOE="${12:-0}"
+    local BINARY_TECHNIQUE="${13:-0}"
+    local LABEL_CFG_OVERRIDE="${14:-}"
+    local MERT_BACKBONE="${15:-0}"
 
     echo ""
     echo "========================================================"
@@ -75,10 +85,15 @@ run_train() {
     echo "  Shared-CRNN-MoE:  ${SHARED_CRNN_MOE}"
     echo "  Hier-MultiLevel:  ${HIER_MULTILEVEL}"
     echo "  Hier-MoE:         ${HIER_MOE}"
+    echo "  Binary technique: ${BINARY_TECHNIQUE}"
+    echo "  MERT backbone:    ${MERT_BACKBONE}"
     echo "  Temporal experts: ${TEMPORAL_EXPERTS}"
     echo "  Device:           ${DEVICE}"
     echo "  Seed:             ${SEED}"
     echo "========================================================"
+
+    local EFFECTIVE_LABEL_CFG="${LABEL_CFG}"
+    [ -n "$LABEL_CFG_OVERRIDE" ] && EFFECTIVE_LABEL_CFG="$LABEL_CFG_OVERRIDE"
 
     local EXTRA_ARGS=""
     [ -n "$EXPERT_MASK" ] && EXTRA_ARGS+=" --fmoe_expert_mask=${EXPERT_MASK}"
@@ -91,6 +106,8 @@ run_train() {
     [ "$SHARED_CRNN_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_shared_crnn_moe=1 --frame_moe_balance_coeff=0.005 --fmoe_aux_weight=0.1"
     [ "$HIER_MULTILEVEL" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_multilevel=1"
     [ "$HIER_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_moe=1 --fmoe_aux_weight=0.1"
+    [ "$BINARY_TECHNIQUE" = "1" ] && EXTRA_ARGS+=" --fmoe_binary_technique=1"
+    [ "$MERT_BACKBONE" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_backbone=1"
 
     cd "${WORKSPACE}/piano_transcription"
 
@@ -128,7 +145,7 @@ run_train() {
         --fmoe_uniform_routing=0 \
         --focal_gamma=2.0 \
         --mosavpt_ratio=0.2 \
-        --technique_label_config="${LABEL_CFG}" \
+        --technique_label_config="${EFFECTIVE_LABEL_CFG}" \
         --rwc_eval_h5_path=$RWC_H5 \
         --rwc_eval_split=all \
         --rwc_eval_max_iterations=500 \
@@ -153,12 +170,26 @@ case "$EXPERIMENT" in
     shared_crnn_moe) run_train "shared_crnn_moe_e01234567" "" 0  0  0  0  0  0  0  1 ;;
     hier_multilevel) run_train "hier_multilevel" ""  0  0  0  0  0  0  0  0  1  0 ;;
     hier_moe)        run_train "hier_moe"        ""  0  0  0  0  0  0  0  0  0  1 ;;
+    binary_baseline)
+        run_train "binary_baseline_e012" "0,1,2" 0  0  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG" ;;
+    binary_full)
+        run_train "binary_full_e0123"    "0,1,2,3" 1  0  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG" ;;
+    binary_no_moe)
+        run_train "binary_no_moe"        "0,1,2" 0  0  0  1  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG" ;;
+    binary_detach_cues)
+        run_train "binary_detach_cues_e012" "0,1,2" 0  1  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG" ;;
+    mert_baseline)
+        run_train "mert_baseline_e012" "0,1,2" 0  0  0  0  0  0  0  0  0  0  0  ""  1 ;;
+    mert_binary)
+        run_train "mert_binary_e012" "0,1,2" 0  0  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG"  1 ;;
     all)
         for e in baseline full no_onset no_note no_phrase \
                  only_onset only_note only_phrase \
                  detach_cues freeze_trans no_moe hierarchical \
                  hier_multilevel hier_moe \
-                 multi_crnn crnn_moe shared_crnn_moe; do
+                 multi_crnn crnn_moe shared_crnn_moe \
+                 binary_baseline binary_full binary_no_moe binary_detach_cues \
+                 mert_baseline mert_binary; do
             bash "$0" "$e" "$DEVICE"
         done
         ;;
@@ -167,7 +198,9 @@ case "$EXPERIMENT" in
         echo "Available: baseline full no_onset no_note no_phrase"
         echo "           only_onset only_note only_phrase"
         echo "           detach_cues freeze_trans no_moe hierarchical hier_multilevel hier_moe"
-        echo "           multi_crnn crnn_moe shared_crnn_moe all"
+        echo "           multi_crnn crnn_moe shared_crnn_moe"
+        echo "           binary_baseline binary_full binary_no_moe binary_detach_cues"
+        echo "           mert_baseline mert_binary all"
         exit 1
         ;;
 esac

@@ -29,6 +29,7 @@ _CONFIG_PATH = os.path.join(
 
 _TASK_KEYS = ('tonal_technique', 'articulation', 'legato')
 _TASK_SHORT = {'tonal_technique': 'tonal', 'articulation': 'artic', 'legato': 'legato'}
+_BINARY_FLAG_ORDER = ('pizzicato', 'harmonic', 'spiccato')
 
 
 class TechniqueLabels:
@@ -108,6 +109,47 @@ class TechniqueLabels:
         with remap already applied."""
         return dict(self._rwc_map)
 
+    @property
+    def binary_technique(self):
+        """True when config uses binary flag decomposition."""
+        return self._binary
+
+    @property
+    def binary_flag_names(self):
+        """Ordered list of binary flag names (excluding legato)."""
+        return list(self._binary_flags.keys()) if self._binary else []
+
+    @property
+    def binary_flag_sources(self):
+        """dict  {flag_name: (source_task, source_class_id)} for binary decomposition."""
+        return dict(self._binary_flag_sources)
+
+    def decompose_to_binary(self, tonal_id, artic_id):
+        """Convert original tonal/artic class IDs to binary flag tuple.
+
+        Returns dict {flag_name: 0 or 1}.  Only valid when binary_technique=True.
+        """
+        result = {}
+        for flag_name, (task, cls_id) in self._binary_flag_sources.items():
+            if task == 'tonal_technique':
+                result[flag_name] = 1 if int(tonal_id) == cls_id else 0
+            elif task == 'articulation':
+                result[flag_name] = 1 if int(artic_id) == cls_id else 0
+        return result
+
+    @property
+    def rwc_binary_technique_map(self):
+        """dict  {technique_name: {flag_name: 0/1, ..., 'legato': int}}
+        for RWC cross-dataset evaluation in binary mode."""
+        if not self._binary:
+            return {}
+        result = {}
+        for tech_name, mapping in self._rwc_map.items():
+            flags = self.decompose_to_binary(mapping['tonal'], mapping['artic'])
+            flags['legato'] = mapping['legato']
+            result[tech_name] = flags
+        return result
+
     def describe(self):
         """Print a human-readable summary of the current config."""
         lines = [f'TechniqueLabels  (from {self._path})', '']
@@ -143,6 +185,10 @@ class TechniqueLabels:
         self._raw_names = {}   # same but before remap filtering
         self._id_remap = {}    # task → {src_id(int): dst_id(int)}
         self._name_to_id = {}  # task → {name: int_id}
+
+        self._binary = bool(self._cfg.get('binary_technique', False))
+        self._binary_flags = {}        # {flag_name: {source, source_class}}
+        self._binary_flag_sources = {} # {flag_name: (task_key, class_id)}
 
         for task in _TASK_KEYS:
             task_cfg = self._cfg[task]
@@ -194,6 +240,24 @@ class TechniqueLabels:
                 'legato', mapping.get('legato', 'bow_change'))
             self._rwc_map[tech_name] = {
                 'tonal': tonal_id, 'artic': artic_id, 'legato': legato_id}
+
+        if self._binary:
+            for flag_name in _BINARY_FLAG_ORDER:
+                flag_cfg = self._cfg.get('binary_flags', {}).get(flag_name)
+                if flag_cfg is None:
+                    continue
+                src_task = flag_cfg['source']
+                src_class = flag_cfg['source_class']
+                src_id = self._name_to_id[src_task].get(src_class, -1)
+                if src_id < 0:
+                    _logger.warning(
+                        f'[TechniqueLabels] binary flag "{flag_name}" source '
+                        f'class "{src_class}" not found in {src_task}')
+                    continue
+                self._binary_flags[flag_name] = flag_cfg
+                self._binary_flag_sources[flag_name] = (src_task, src_id)
+                _logger.info(f'[TechniqueLabels] binary flag: {flag_name} '
+                             f'← {src_task}[{src_class}](id={src_id})')
 
     def _resolve_and_remap(self, task, name):
         raw_id = self._name_to_id[task].get(name, 0)

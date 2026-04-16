@@ -243,9 +243,11 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                  hierarchical_moe_head=False,
                  multi_crnn_head=False,
                  crnn_moe_head=False,
-                 shared_crnn_moe_head=False):
+                 shared_crnn_moe_head=False,
+                 mert_backbone=False):
         super(Regress_onset_offset_frame_velocity_CRNN, self).__init__()
         self.detach_cues = detach_cues
+        self._mert_backbone = mert_backbone
 
         sample_rate = 16000
         window_size = 2048
@@ -363,15 +365,23 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                         else FrameHierarchicalConfig())
                 self.frame_moe_head = FrameHierarchicalHead(_cfg)
             elif direct_head:
-                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
-                    classes_num, midfeat, momentum,
-                    output_features=True)
+                if mert_backbone:
+                    from mert_backbone import MERTBackbone
+                    self.technique_acoustic_frame_moe = MERTBackbone()
+                else:
+                    self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                        classes_num, midfeat, momentum,
+                        output_features=True)
                 _cfg = frame_moe_config or FrameMultiScaleMoEConfig()
                 self.frame_moe_head = FrameDirectHead(_cfg)
             else:
-                self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
-                    classes_num, midfeat, momentum,
-                    output_features=True)
+                if mert_backbone:
+                    from mert_backbone import MERTBackbone
+                    self.technique_acoustic_frame_moe = MERTBackbone()
+                else:
+                    self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
+                        classes_num, midfeat, momentum,
+                        output_features=True)
                 _cfg = frame_moe_config or FrameMultiScaleMoEConfig()
                 self.frame_moe_head = FrameMultiScaleMoEHead(_cfg)
 
@@ -544,11 +554,14 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
         if self.predict_technique_frame_moe:
             fmoe_conv2d_map = None
             if hasattr(self, 'technique_acoustic_frame_moe'):
-                crnn = self.technique_acoustic_frame_moe
-                if crnn.output_conv2d_map:
-                    _, fmoe_features, fmoe_conv2d_map = crnn(logmel)
+                backbone = self.technique_acoustic_frame_moe
+                if self._mert_backbone:
+                    target_T = output_dict['reg_onset_output'].shape[1]
+                    fmoe_features = backbone(input, target_T=target_T)
+                elif backbone.output_conv2d_map:
+                    _, fmoe_features, fmoe_conv2d_map = backbone(logmel)
                 else:
-                    _, fmoe_features = crnn(logmel)
+                    _, fmoe_features = backbone(logmel)
             else:
                 fmoe_features = None  # multi-CRNN head has its own backbone
             # Transcription structural cues — max-pool across pitches
@@ -563,20 +576,32 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
             offset_cue = reg_offset.max(dim=-1, keepdim=True)[0]
             frame_cue = frame.max(dim=-1, keepdim=True)[0]
 
-            (fm_t, fm_a, fm_l, fg_t, fg_a, fg_l,
-             aux_t, aux_a, aux_l) = self.frame_moe_head(
+            _fmoe_out = self.frame_moe_head(
                 fmoe_features, onset_cue, offset_cue, frame_cue,
                 logmel=logmel, conv2d_map=fmoe_conv2d_map)
 
-            output_dict['fmoe_tonal_logits'] = fm_t
-            output_dict['fmoe_artic_logits'] = fm_a
-            output_dict['fmoe_legato_prob']  = fm_l
-            output_dict['fmoe_gate_tonal']   = fg_t
-            output_dict['fmoe_gate_artic']   = fg_a
-            output_dict['fmoe_gate_legato']  = fg_l
-            output_dict['fmoe_aux_tonal']    = aux_t
-            output_dict['fmoe_aux_artic']    = aux_a
-            output_dict['fmoe_aux_legato']   = aux_l
+            _is_binary = (isinstance(_fmoe_out, tuple) and len(_fmoe_out) == 3
+                          and isinstance(_fmoe_out[0], dict))
+            if _is_binary:
+                probs, gates, aux = _fmoe_out
+                output_dict['fmoe_binary_probs'] = probs
+                output_dict['fmoe_binary_gates'] = gates
+                output_dict['fmoe_binary_aux'] = aux
+                for _fname, _fprob in probs.items():
+                    output_dict[f'fmoe_{_fname}_prob'] = _fprob
+                output_dict['fmoe_tonal_logits'] = None
+            else:
+                (fm_t, fm_a, fm_l, fg_t, fg_a, fg_l,
+                 aux_t, aux_a, aux_l) = _fmoe_out
+                output_dict['fmoe_tonal_logits'] = fm_t
+                output_dict['fmoe_artic_logits'] = fm_a
+                output_dict['fmoe_legato_prob']  = fm_l
+                output_dict['fmoe_gate_tonal']   = fg_t
+                output_dict['fmoe_gate_artic']   = fg_a
+                output_dict['fmoe_gate_legato']  = fg_l
+                output_dict['fmoe_aux_tonal']    = aux_t
+                output_dict['fmoe_aux_artic']    = aux_a
+                output_dict['fmoe_aux_legato']   = aux_l
 
         return output_dict
 

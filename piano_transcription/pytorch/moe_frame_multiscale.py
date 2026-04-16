@@ -58,6 +58,8 @@ class FrameMultiScaleMoEConfig:
     # --- parameterized temporal experts ---
     temporal_experts: tuple = None  # ((kernel, dilation), ...) None = legacy 3-expert
     use_cues: bool = True           # inject transcription cues into experts and gate
+    # --- binary technique mode ---
+    binary_technique: bool = False  # 4 independent binary heads (pizz/harm/spic/legato)
 
 
 # ---------------------------------------------------------------------------
@@ -259,41 +261,63 @@ class FrameMultiScaleMoEHead(nn.Module):
         self.experts = nn.ModuleList(experts)
         num_experts = len(experts)
 
-        # Gates
+        # Gates & classification heads
         gate_hidden = cfg.expert_hidden // 2
-        if cfg.shared_gate:
-            self.gate_shared = _Gate(gate_in, num_experts, gate_hidden,
-                                     cfg.gate_dropout)
+        self._binary_mode = cfg.binary_technique
+
+        if cfg.binary_technique:
+            self._binary_flag_names = ['pizzicato', 'harmonic', 'spiccato', 'legato']
+            n_flags = len(self._binary_flag_names)
+            self.gates = nn.ModuleDict({
+                name: _Gate(gate_in, num_experts, gate_hidden, cfg.gate_dropout)
+                for name in self._binary_flag_names
+            })
+            self.layer_norms = nn.ModuleDict({
+                name: nn.LayerNorm(cfg.shared_dim)
+                for name in self._binary_flag_names
+            })
+            self.heads = nn.ModuleDict({
+                name: nn.Linear(cfg.shared_dim, 1)
+                for name in self._binary_flag_names
+            })
+            self.aux_heads = nn.ModuleDict({
+                name: nn.ModuleList([
+                    nn.Linear(cfg.shared_dim, 1) for _ in range(num_experts)
+                ])
+                for name in self._binary_flag_names
+            })
         else:
-            self.gate_tonal = _Gate(gate_in, num_experts, gate_hidden,
-                                    cfg.gate_dropout)
-            self.gate_artic = _Gate(gate_in, num_experts, gate_hidden,
-                                    cfg.gate_dropout)
-            self.gate_legato = _Gate(gate_in, num_experts, gate_hidden,
-                                     cfg.gate_dropout)
+            if cfg.shared_gate:
+                self.gate_shared = _Gate(gate_in, num_experts, gate_hidden,
+                                         cfg.gate_dropout)
+            else:
+                self.gate_tonal = _Gate(gate_in, num_experts, gate_hidden,
+                                        cfg.gate_dropout)
+                self.gate_artic = _Gate(gate_in, num_experts, gate_hidden,
+                                        cfg.gate_dropout)
+                self.gate_legato = _Gate(gate_in, num_experts, gate_hidden,
+                                         cfg.gate_dropout)
 
-        # Classification heads
-        self.ln_tonal = nn.LayerNorm(cfg.shared_dim)
-        self.ln_artic = nn.LayerNorm(cfg.shared_dim)
-        self.ln_legato = nn.LayerNorm(cfg.shared_dim)
+            self.ln_tonal = nn.LayerNorm(cfg.shared_dim)
+            self.ln_artic = nn.LayerNorm(cfg.shared_dim)
+            self.ln_legato = nn.LayerNorm(cfg.shared_dim)
 
-        self.tonal_head = nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
-        self.artic_head = nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
-        self.legato_head = nn.Linear(cfg.shared_dim, 1)
+            self.tonal_head = nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
+            self.artic_head = nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
+            self.legato_head = nn.Linear(cfg.shared_dim, 1)
 
-        # Per-expert auxiliary classification heads (training only)
-        self.aux_tonal_heads = nn.ModuleList([
-            nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
-            for _ in range(num_experts)
-        ])
-        self.aux_artic_heads = nn.ModuleList([
-            nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
-            for _ in range(num_experts)
-        ])
-        self.aux_legato_heads = nn.ModuleList([
-            nn.Linear(cfg.shared_dim, 1)
-            for _ in range(num_experts)
-        ])
+            self.aux_tonal_heads = nn.ModuleList([
+                nn.Linear(cfg.shared_dim, cfg.num_tonal_classes)
+                for _ in range(num_experts)
+            ])
+            self.aux_artic_heads = nn.ModuleList([
+                nn.Linear(cfg.shared_dim, cfg.num_artic_classes)
+                for _ in range(num_experts)
+            ])
+            self.aux_legato_heads = nn.ModuleList([
+                nn.Linear(cfg.shared_dim, 1)
+                for _ in range(num_experts)
+            ])
 
     def _get_gate_probs(self, gate_module, x):
         logits = gate_module(x)
@@ -383,6 +407,28 @@ class FrameMultiScaleMoEHead(nn.Module):
             gate_parts.append(cue_cat)
         gate_in = torch.cat(gate_parts, dim=-1)
 
+        def _mix(gp, ln):
+            h = (gp.unsqueeze(-1) * expert_outs).sum(dim=-2)
+            return F.relu(ln(h))
+
+        if self._binary_mode:
+            gate_probs = {}
+            probs = {}
+            aux = {}
+            for name in self._binary_flag_names:
+                if self.cfg.uniform_routing:
+                    gp = self._uniform_probs(features)
+                else:
+                    gp = self._get_gate_probs(self.gates[name], gate_in)
+                gate_probs[name] = gp
+                probs[name] = torch.sigmoid(
+                    self.heads[name](_mix(gp, self.layer_norms[name])))
+                aux[name] = [
+                    torch.sigmoid(h(expert_list[i]))
+                    for i, h in enumerate(self.aux_heads[name])
+                ]
+            return probs, gate_probs, aux
+
         if self.cfg.uniform_routing:
             gp_tonal = gp_artic = gp_legato = self._uniform_probs(features)
         elif self.cfg.shared_gate:
@@ -392,10 +438,6 @@ class FrameMultiScaleMoEHead(nn.Module):
             gp_tonal = self._get_gate_probs(self.gate_tonal, gate_in)
             gp_artic = self._get_gate_probs(self.gate_artic, gate_in)
             gp_legato = self._get_gate_probs(self.gate_legato, gate_in)
-
-        def _mix(gp, ln):
-            h = (gp.unsqueeze(-1) * expert_outs).sum(dim=-2)
-            return F.relu(ln(h))
 
         tonal_logits = self.tonal_head(_mix(gp_tonal, self.ln_tonal))
         artic_logits = self.artic_head(_mix(gp_artic, self.ln_artic))
@@ -919,3 +961,109 @@ def _frame_balance_loss(gate_probs, active_mask, device):
     E = masked.shape[1]
     P = masked.mean(dim=0)
     return E * (P * P).sum()
+
+
+# ---------------------------------------------------------------------------
+# Binary technique losses
+# ---------------------------------------------------------------------------
+
+_BINARY_POS_WEIGHTS = {
+    'pizzicato': 5.0,
+    'harmonic': 5.0,
+    'spiccato': 5.0,
+    'legato': 5.0,
+}
+
+
+def frame_moe_binary_technique_losses(output_dict, target_dict, device=None):
+    """Frame-level binary technique losses for the 4-flag decomposition.
+
+    Target keys: pizzicato (B,T), harmonic (B,T), spiccato (B,T),
+                 legato (B,T) — all float [0,1].
+    Output keys: fmoe_binary_probs  {name: (B,T,1)},
+                 fmoe_binary_gates  {name: (B,T,E)}.
+
+    Returns (per_flag_losses: dict, loss_balance, loss_aux).
+    """
+    dev = device
+
+    active_mask = None
+    if 'frame_roll' in target_dict:
+        active_mask = (target_dict['frame_roll'].sum(dim=-1) > 0)
+
+    probs_dict = output_dict.get('fmoe_binary_probs', {})
+    gates_dict = output_dict.get('fmoe_binary_gates', {})
+    aux_dict = output_dict.get('fmoe_binary_aux', {})
+
+    flag_names = list(probs_dict.keys())
+    per_flag_losses = {}
+
+    for name in flag_names:
+        tgt_key = name
+        if tgt_key not in target_dict:
+            per_flag_losses[name] = torch.tensor(0.0, device=dev)
+            continue
+
+        pred = probs_dict[name].squeeze(-1)
+        tgt = target_dict[tgt_key].float()
+        T = min(pred.shape[1], tgt.shape[1])
+        pred = pred[:, :T]
+        tgt = tgt[:, :T]
+
+        pw = _BINARY_POS_WEIGHTS.get(name, 5.0)
+
+        if active_mask is not None:
+            m = active_mask[:, :T]
+            if m.any():
+                bce = F.binary_cross_entropy(pred[m], tgt[m], reduction='none')
+                w = torch.where(tgt[m] > 0.1, pw, 1.0)
+                per_flag_losses[name] = (bce * w).mean()
+            else:
+                per_flag_losses[name] = torch.tensor(0.0, device=dev)
+        else:
+            bce = F.binary_cross_entropy(
+                pred.reshape(-1), tgt.reshape(-1), reduction='none')
+            w = torch.where(tgt.reshape(-1) > 0.1, pw, 1.0)
+            per_flag_losses[name] = (bce * w).mean()
+
+    # Balance losses across all gates
+    bal_losses = []
+    for name in flag_names:
+        gp = gates_dict.get(name)
+        bal_losses.append(_frame_balance_loss(gp, active_mask, dev))
+    loss_balance = sum(bal_losses) / max(len(bal_losses), 1)
+
+    # Per-expert auxiliary loss
+    loss_aux = torch.tensor(0.0, device=dev)
+    if aux_dict:
+        first_key = next(iter(aux_dict))
+        E = len(aux_dict[first_key])
+        expert_losses = []
+        for e in range(E):
+            el = torch.tensor(0.0, device=dev)
+            for name in flag_names:
+                tgt_key = name
+                if tgt_key not in target_dict or name not in aux_dict:
+                    continue
+                pred_e = aux_dict[name][e].squeeze(-1)
+                tgt = target_dict[tgt_key].float()
+                T = min(pred_e.shape[1], tgt.shape[1])
+                pred_e = pred_e[:, :T]
+                tgt = tgt[:, :T]
+                if active_mask is not None:
+                    m = active_mask[:, :T]
+                    if not m.any():
+                        continue
+                    pred_e = pred_e[m]
+                    tgt = tgt[m]
+                else:
+                    pred_e = pred_e.reshape(-1)
+                    tgt = tgt.reshape(-1)
+                pw = _BINARY_POS_WEIGHTS.get(name, 5.0)
+                bce = F.binary_cross_entropy(pred_e, tgt, reduction='none')
+                w = torch.where(tgt > 0.1, pw, 1.0)
+                el = el + (bce * w).mean()
+            expert_losses.append(el)
+        loss_aux = sum(expert_losses) / E
+
+    return per_flag_losses, loss_balance, loss_aux

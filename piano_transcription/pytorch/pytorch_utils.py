@@ -64,7 +64,8 @@ def forward_dataloader(model, dataloader, batch_size, return_target=True):
                     batch_output_dict[key].data.cpu().numpy())
 
         if return_target:
-            _target_keys = {'technique', 'tonal_technique', 'articulation', 'legato'}
+            _target_keys = {'technique', 'tonal_technique', 'articulation', 'legato',
+                           'pizzicato', 'harmonic', 'spiccato'}
             for target_type in batch_data_dict.keys():
                 if 'roll' in target_type or 'reg_distance' in target_type or \
                     'reg_tail' in target_type or target_type in _target_keys:

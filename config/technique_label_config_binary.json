@@ -1,0 +1,48 @@
+{
+    "binary_technique": true,
+    "binary_flags": {
+        "pizzicato": {
+            "source": "tonal_technique",
+            "source_class": "pizzicato"
+        },
+        "harmonic": {
+            "source": "tonal_technique",
+            "source_class": "harmonics"
+        },
+        "spiccato": {
+            "source": "articulation",
+            "source_class": "spiccato"
+        }
+    },
+    "tonal_technique": {
+        "classes": {
+            "0": "none",
+            "1": "pizzicato",
+            "2": "harmonics",
+            "3": "openstring"
+        },
+        "remap": {}
+    },
+    "articulation": {
+        "classes": {
+            "0": "none",
+            "1": "release",
+            "2": "staccato",
+            "3": "spiccato"
+        },
+        "remap": {}
+    },
+    "legato": {
+        "classes": {
+            "0": "bow_change",
+            "1": "sustained"
+        },
+        "remap": {}
+    },
+    "rwc_technique_map": {
+        "flageolet": {"tonal": "harmonics", "artic": "none", "legato": "bow_change"},
+        "normal":    {"tonal": "none",      "artic": "none", "legato": "bow_change"},
+        "pizzicato": {"tonal": "pizzicato", "artic": "none", "legato": "bow_change"},
+        "spiccato":  {"tonal": "none",      "artic": "spiccato", "legato": "bow_change"}
+    }
+}
