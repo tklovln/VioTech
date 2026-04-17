@@ -380,6 +380,10 @@ def evaluate(args):
     fmoe_hierarchical_moe = bool(getattr(args, 'fmoe_hierarchical_moe', 0))
     fmoe_binary_technique = bool(getattr(args, 'fmoe_binary_technique', 0))
     fmoe_mert_backbone = bool(getattr(args, 'fmoe_mert_backbone', 0))
+    fmoe_mert_moe = bool(getattr(args, 'fmoe_mert_moe', 0))
+    fmoe_mert_moe_hier = bool(getattr(args, 'fmoe_mert_moe_hierarchical', 0))
+    if fmoe_mert_moe_hier:
+        fmoe_mert_moe = True
     fmoe_spectral = bool(getattr(args, 'fmoe_spectral_expert', 1))
     fmoe_mask_str = getattr(args, 'fmoe_expert_mask', None)
     fmoe_expert_mask = (
@@ -458,6 +462,25 @@ def evaluate(args):
         frame_moe_cfg = FrameHierarchicalConfig(use_cues=fmoe_use_cues)
         print(f'Frame-MoE mode: hierarchical (soft coarse-to-fine)')
         print(f'Frame-MoE use cues: {fmoe_use_cues}')
+    elif fmoe_mert_moe:
+        from mert_moe_backbone import MERTMoEConfig
+        _mm_kw = dict(
+            use_cues=fmoe_use_cues,
+            binary_technique=fmoe_binary_technique,
+            expert_mask=fmoe_expert_mask,
+            hierarchical=fmoe_mert_moe_hier,
+        )
+        if fmoe_temporal_experts:
+            _mm_kw['temporal_experts'] = fmoe_temporal_experts
+        fmoe_top_k = getattr(args, 'fmoe_top_k', None)
+        if fmoe_top_k is not None:
+            _mm_kw['top_k'] = fmoe_top_k
+        frame_moe_cfg = MERTMoEConfig(**_mm_kw)
+        _moe_label = 'MERT MoE + Hierarchical' if fmoe_mert_moe_hier else 'MERT Multi-Scale MoE'
+        print(f'Frame-MoE mode: {_moe_label} (per-expert layer weights + GRU)')
+        print(f'Frame-MoE temporal experts: {frame_moe_cfg.temporal_experts}')
+        print(f'Frame-MoE expert mask: {fmoe_expert_mask}')
+        print(f'Frame-MoE use cues: {fmoe_use_cues}')
     else:
         # Auto-detect legacy vs unified cue mode from checkpoint weights.
         if fmoe_temporal_experts is None and fmoe_use_cues:
@@ -501,6 +524,8 @@ def evaluate(args):
     print(f'Frame-MoE multi-CRNN: {fmoe_multi_crnn}')
     print(f'Frame-MoE CRNN-MoE: {fmoe_crnn_moe}')
     print(f'Frame-MoE Shared-CRNN-MoE: {fmoe_shared_crnn_moe}')
+    print(f'Frame-MoE MERT-MoE: {fmoe_mert_moe}')
+    print(f'Frame-MoE MERT-MoE Hierarchical: {fmoe_mert_moe_hier}')
 
     model = Regress_onset_offset_frame_velocity_CRNN(
         frames_per_second=fps,
@@ -520,6 +545,7 @@ def evaluate(args):
         crnn_moe_head=fmoe_crnn_moe,
         shared_crnn_moe_head=fmoe_shared_crnn_moe,
         mert_backbone=fmoe_mert_backbone,
+        mert_moe_head=fmoe_mert_moe,
     )
 
     # Extract checkpoint metadata
@@ -530,8 +556,11 @@ def evaluate(args):
         'best_metric_val': checkpoint.get('best_metric_val', None),
     }
     if ckpt_info['iteration'] is not None:
+        bm = ckpt_info['best_metric']
+        bv = ckpt_info['best_metric_val']
+        bv_str = f'{bv:.6f}' if isinstance(bv, (int, float)) else 'N/A'
         print(f'Checkpoint info: iteration={ckpt_info["iteration"]}, '
-              f'{ckpt_info["best_metric"]}={ckpt_info["best_metric_val"]:.6f}')
+              f'{bm}={bv_str}')
 
     model.load_state_dict(state, strict=False)
     model.to(device)
@@ -568,7 +597,10 @@ def evaluate(args):
         mini_data=False,
     )
     max_possible = len(test_sampler.segment_list) // args.batch_size
-    test_sampler.max_evaluate_iteration = min(args.max_iterations, max_possible)
+    if args.max_iterations <= 0:
+        test_sampler.max_evaluate_iteration = max_possible
+    else:
+        test_sampler.max_evaluate_iteration = min(args.max_iterations, max_possible)
     print(f'[Viotech] Test segments: {len(test_sampler.segment_list)}, '
           f'max batches: {test_sampler.max_evaluate_iteration}')
 
@@ -656,7 +688,10 @@ def evaluate(args):
             fold_id=args.rwc_fold,
         )
         max_rwc = len(rwc_sampler.segment_list) // max(args.batch_size, 1)
-        rwc_sampler.max_evaluate_iteration = min(args.max_iterations, max_rwc)
+        if args.max_iterations <= 0:
+            rwc_sampler.max_evaluate_iteration = max_rwc
+        else:
+            rwc_sampler.max_evaluate_iteration = min(args.max_iterations, max_rwc)
 
         rwc_loader = torch.utils.data.DataLoader(
             dataset=rwc_dataset,
@@ -1255,6 +1290,10 @@ if __name__ == '__main__':
                         help='Binary technique decomposition (must match training)')
     parser.add_argument('--fmoe_mert_backbone', type=int, default=0, choices=[0, 1],
                         help='Use frozen MERT-v1-330M backbone (must match training)')
+    parser.add_argument('--fmoe_mert_moe', type=int, default=0, choices=[0, 1],
+                        help='MERT Multi-Scale MoE backbone+head (must match training)')
+    parser.add_argument('--fmoe_mert_moe_hierarchical', type=int, default=0, choices=[0, 1],
+                        help='MERT MoE + hierarchical prediction (must match training)')
     parser.add_argument('--output_json', type=str, default=None,
                         help='Path to save evaluation results as JSON')
     parser.add_argument('--technique_label_config', type=str, default=None,

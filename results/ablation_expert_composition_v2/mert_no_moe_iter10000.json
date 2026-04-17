@@ -1,0 +1,135 @@
+{
+  "checkpoint": {
+    "checkpoint_path": "/root/VioPTT/checkpoints/main_contrast/ablation_fmoe_tech0.1_mert_no_moe_direct/Regress_onset_offset_frame_velocity_CRNN/loss_type=regress_onset_offset_frame_velocity_bce/augmentation=aug/max_note_shift=2/batch_size=8/10000_iterations.pth",
+    "iteration": 10000,
+    "best_metric": null,
+    "best_metric_val": null
+  },
+  "event_level": false,
+  "viotech": {
+    "total_active_frames": 1417475,
+    "tonal": {
+      "accuracy": 0.971,
+      "macro_f1": 0.4976,
+      "weighted_f1": 0.9649,
+      "macro_precision": 0.7694,
+      "macro_recall": 0.4904,
+      "per_class": {
+        "none": {
+          "accuracy": 0.9921,
+          "support": 1379277
+        },
+        "pizzicato": {
+          "accuracy": 0.0584,
+          "support": 22365
+        },
+        "harmonics": {
+          "accuracy": 0.4208,
+          "support": 15833
+        }
+      }
+    },
+    "articulation": {
+      "accuracy": 0.9415,
+      "macro_f1": 0.759,
+      "weighted_f1": 0.9429,
+      "macro_precision": 0.7471,
+      "macro_recall": 0.7725,
+      "per_class": {
+        "none": {
+          "accuracy": 0.9652,
+          "support": 1330330
+        },
+        "spiccato": {
+          "accuracy": 0.5798,
+          "support": 87145
+        }
+      }
+    },
+    "legato": {
+      "accuracy": 0.8467,
+      "macro_f1": 0.6266,
+      "weighted_f1": 0.8445,
+      "macro_precision": 0.6303,
+      "macro_recall": 0.6232,
+      "per_class": {
+        "sustained": {
+          "accuracy": 0.9172,
+          "support": 1247553
+        },
+        "bow_change": {
+          "accuracy": 0.3292,
+          "support": 169922
+        }
+      }
+    },
+    "gate_distribution": {
+      "tonal": {},
+      "articulation": {},
+      "legato": {}
+    }
+  },
+  "rwc": {
+    "total_active_frames": 2441761,
+    "tonal": {
+      "accuracy": 0.7344,
+      "macro_f1": 0.5159,
+      "weighted_f1": 0.7658,
+      "macro_precision": 0.6912,
+      "macro_recall": 0.618,
+      "per_class": {
+        "none": {
+          "accuracy": 0.7849,
+          "support": 2075011
+        },
+        "pizzicato": {
+          "accuracy": 0.2599,
+          "support": 240722
+        },
+        "harmonics": {
+          "accuracy": 0.8091,
+          "support": 126028
+        }
+      }
+    },
+    "articulation": {
+      "accuracy": 0.8905,
+      "macro_f1": 0.7306,
+      "weighted_f1": 0.8916,
+      "macro_precision": 0.7261,
+      "macro_recall": 0.7353,
+      "per_class": {
+        "none": {
+          "accuracy": 0.9354,
+          "support": 2167914
+        },
+        "spiccato": {
+          "accuracy": 0.5353,
+          "support": 273847
+        }
+      }
+    },
+    "legato": {
+      "accuracy": 0.9774,
+      "macro_f1": 0.7435,
+      "weighted_f1": 0.9752,
+      "macro_precision": 0.8022,
+      "macro_recall": 0.7048,
+      "per_class": {
+        "sustained": {
+          "accuracy": 0.9929,
+          "support": 2375837
+        },
+        "bow_change": {
+          "accuracy": 0.4168,
+          "support": 65924
+        }
+      }
+    },
+    "gate_distribution": {
+      "tonal": {},
+      "articulation": {},
+      "legato": {}
+    }
+  }
+}

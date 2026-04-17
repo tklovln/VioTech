@@ -143,6 +143,10 @@ def train(args):
     fmoe_shared_crnn_moe = bool(getattr(args, 'fmoe_shared_crnn_moe', 0))
     fmoe_binary_technique = bool(getattr(args, 'fmoe_binary_technique', 0))
     fmoe_mert_backbone = bool(getattr(args, 'fmoe_mert_backbone', 0))
+    fmoe_mert_moe = bool(getattr(args, 'fmoe_mert_moe', 0))
+    fmoe_mert_moe_hier = bool(getattr(args, 'fmoe_mert_moe_hierarchical', 0))
+    if fmoe_mert_moe_hier:
+        fmoe_mert_moe = True
     focal_gamma = getattr(args, 'focal_gamma', 0.0)
     print('technique weight: ', technique_weight)
     print('technique MoE weight: ', technique_moe_weight)
@@ -168,6 +172,8 @@ def train(args):
     print('Frame-MoE Shared-CRNN-MoE: ', fmoe_shared_crnn_moe)
     print('Frame-MoE binary technique: ', fmoe_binary_technique)
     print('Frame-MoE MERT backbone: ', fmoe_mert_backbone)
+    print('Frame-MoE MERT MoE: ', fmoe_mert_moe)
+    print('Frame-MoE MERT MoE Hierarchical: ', fmoe_mert_moe_hier)
     print('focal loss gamma: ', focal_gamma)
     if dataset == 'viotech_mixed_mosavpt':
         print('mosavpt_ratio: ', getattr(args, 'mosavpt_ratio', 0.5))
@@ -282,6 +288,19 @@ def train(args):
         elif fmoe_hierarchical:
             from hierarchical_frame import FrameHierarchicalConfig
             frame_moe_cfg = FrameHierarchicalConfig(use_cues=fmoe_use_cues)
+        elif fmoe_mert_moe:
+            from mert_moe_backbone import MERTMoEConfig
+            _mm_kwargs = dict(
+                use_cues=fmoe_use_cues,
+                binary_technique=fmoe_binary_technique,
+                expert_mask=fmoe_expert_mask,
+                hierarchical=fmoe_mert_moe_hier,
+            )
+            if fmoe_temporal_experts:
+                _mm_kwargs['temporal_experts'] = fmoe_temporal_experts
+            if fmoe_top_k is not None:
+                _mm_kwargs['top_k'] = fmoe_top_k
+            frame_moe_cfg = MERTMoEConfig(**_mm_kwargs)
         else:
             _fmoe_kwargs = dict(
                 use_spectral_expert=fmoe_spectral_expert,
@@ -316,6 +335,7 @@ def train(args):
         crnn_moe_head=fmoe_crnn_moe,
         shared_crnn_moe_head=fmoe_shared_crnn_moe,
         mert_backbone=fmoe_mert_backbone,
+        mert_moe_head=fmoe_mert_moe,
     )
     aux_contrast_onset_model = nn.Linear(512, 128)
     aux_contrast_offset_model = nn.Linear(512, 128)
@@ -953,7 +973,10 @@ def train(args):
             )
             rwc_max_iter = getattr(args, 'rwc_eval_max_iterations', 200)
             max_rwc = len(rwc_eval_sampler.segment_list) // max(batch_size, 1)
-            rwc_eval_sampler.max_evaluate_iteration = min(rwc_max_iter, max_rwc)
+            if rwc_max_iter <= 0:
+                rwc_eval_sampler.max_evaluate_iteration = max_rwc
+            else:
+                rwc_eval_sampler.max_evaluate_iteration = min(rwc_max_iter, max_rwc)
             rwc_eval_loader = torch.utils.data.DataLoader(
                 dataset=rwc_eval_dataset,
                 batch_sampler=rwc_eval_sampler,
@@ -1524,6 +1547,12 @@ if __name__ == '__main__':
              '4 independent binary heads (pizzicato/harmonic/spiccato/legato)')
     parser_train.add_argument('--fmoe_mert_backbone', type=int, default=0, choices=[0, 1],
         help='Use frozen MERT-v1-330M as technique feature extractor (1) instead of CRNN')
+    parser_train.add_argument('--fmoe_mert_moe', type=int, default=0, choices=[0, 1],
+        help='MERT Multi-Scale MoE (1): per-expert MERT layer weighting + temporal '
+             'pyramid Conv1D + per-expert GRU, fully integrated backbone+head')
+    parser_train.add_argument('--fmoe_mert_moe_hierarchical', type=int, default=0, choices=[0, 1],
+        help='MERT MoE + hierarchical prediction (1): binary detector L1 then '
+             'fine-grained classifier L2, composed log-probs')
     parser_train.add_argument('--focal_gamma', type=float, default=0.0,
         help='Focal loss gamma for technique CE losses (0 = standard CE, 2.0 recommended)')
     parser_train.add_argument('--patience', type=int, default=0,

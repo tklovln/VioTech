@@ -434,7 +434,7 @@ def main():
     parser = argparse.ArgumentParser(description="Export evaluation results to figures.")
     parser.add_argument("--experiment", type=str, default="ablation_expert_composition_v2",
                         help="Experiment folder name under results/ (e.g. ablation_expert_composition_v2)")
-    parser.add_argument("--variants", type=str, default=["baseline", "no_moe", "binary_baseline", "detach_cues", "hierarchical", "crnn_moe", "binary_baseline_event_level", "freeze_trans", "mert_baseline"],
+    parser.add_argument("--variants", type=str, default=["baseline", "no_moe", "binary_baseline", "detach_cues", "hierarchical", "crnn_moe", "binary_baseline_event_level", "freeze_trans", "mert_baseline", "mert_moe", "mert_no_moe", "mert_moe_binary"],
                         help='JSON array of variant names to include, e.g. \'["baseline", "binary_baseline"]\'')
     args = parser.parse_args()
 

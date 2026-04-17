@@ -13,6 +13,8 @@
 #   bash scripts/ablation_eval_expert_composition_v2.sh --umap all [device]
 #   bash scripts/ablation_eval_expert_composition_v2.sh --event_level <experiment_id> [device]
 #   bash scripts/ablation_eval_expert_composition_v2.sh --event_level all [device]
+#   bash scripts/ablation_eval_expert_composition_v2.sh --iter <N> <experiment_id> [device]
+#   bash scripts/ablation_eval_expert_composition_v2.sh --iter <N> all [device]
 
 # set -euo pipefail
 
@@ -22,13 +24,22 @@ WORKSPACE="${PROJECT_ROOT}"
 
 UMAP_ONLY=0
 EVENT_LEVEL=0
-if [ "${1:-}" = "--umap" ]; then
-    UMAP_ONLY=1
-    shift
-elif [ "${1:-}" = "--event_level" ]; then
-    EVENT_LEVEL=1
-    shift
-fi
+ITER_OVERRIDE=""
+while true; do
+    case "${1:-}" in
+        --umap)
+            UMAP_ONLY=1
+            shift ;;
+        --event_level)
+            EVENT_LEVEL=1
+            shift ;;
+        --iter)
+            ITER_OVERRIDE="${2:?--iter requires an iteration number}"
+            shift 2 ;;
+        *)
+            break ;;
+    esac
+done
 
 EXPERIMENT="${1:?Usage: $0 [--umap|--event_level] <experiment_id> [device] [checkpoint]}"
 DEVICE="${2:-0}"
@@ -36,7 +47,7 @@ MANUAL_CKPT="${3:-}"
 
 RWC_H5="/mnt/hdd/rwc_processed_data.h5"
 HDF5S_DIR="${WORKSPACE}/hdf5s/viotech_paganini_kayser_with_openstring"
-LABEL_CFG="${WORKSPACE}/config/technique_label_config_reduced_openstring.json"
+LABEL_CFG="${WORKSPACE}/config/technique_label_config_reduced.json"
 BINARY_LABEL_CFG="${WORKSPACE}/config/technique_label_config_binary.json"
 SPLIT="test"
 RESULTS_DIR="${WORKSPACE}/results/ablation_expert_composition_v2"
@@ -54,6 +65,8 @@ resolve_experiment() {
     HIER_MOE=0
     BINARY_TECHNIQUE=0
     MERT_BACKBONE=0
+    MERT_MOE=0
+    MERT_MOE_HIER=0
     EFFECTIVE_LABEL_CFG="$LABEL_CFG"
     case "$exp" in
         baseline)    TAG="ablation_fmoe_openstring_baseline_e012";         EXPERT_MASK="0,1,2"; SPECTRAL=0 ;;
@@ -79,7 +92,11 @@ resolve_experiment() {
         binary_no_moe)   TAG="ablation_fmoe_tech0.1_binary_no_moe";       EXPERT_MASK="0,1,2"; SPECTRAL=0; DIRECT_HEAD=1; BINARY_TECHNIQUE=1; EFFECTIVE_LABEL_CFG="$BINARY_LABEL_CFG" ;;
         binary_detach_cues) TAG="ablation_fmoe_tech0.1_binary_detach_cues_e012"; EXPERT_MASK="0,1,2"; SPECTRAL=0; BINARY_TECHNIQUE=1; EFFECTIVE_LABEL_CFG="$BINARY_LABEL_CFG" ;;
         mert_baseline) TAG="ablation_fmoe_tech0.1_mert_baseline_e012"; EXPERT_MASK="0,1,2"; SPECTRAL=0; MERT_BACKBONE=1 ;;
+        mert_no_moe) TAG="ablation_fmoe_tech0.1_mert_no_moe_direct"; EXPERT_MASK="0,1,2"; SPECTRAL=0; DIRECT_HEAD=1; MERT_BACKBONE=1 ;;
         mert_binary) TAG="ablation_fmoe_tech0.1_mert_binary_e012"; EXPERT_MASK="0,1,2"; SPECTRAL=0; MERT_BACKBONE=1; BINARY_TECHNIQUE=1; EFFECTIVE_LABEL_CFG="$BINARY_LABEL_CFG" ;;
+        mert_moe) TAG="ablation_fmoe_tech0.1_mert_moe_e01234567"; EXPERT_MASK=""; SPECTRAL=0; MERT_MOE=1 ;;
+        mert_moe_hierarchical) TAG="ablation_fmoe_tech0.1_mert_moe_hier_e01234567"; EXPERT_MASK=""; SPECTRAL=0; MERT_MOE=1; MERT_MOE_HIER=1 ;;
+        mert_moe_binary) TAG="ablation_fmoe_tech0.1_mert_moe_binary_e01234567"; EXPERT_MASK=""; SPECTRAL=0; MERT_MOE=1; BINARY_TECHNIQUE=1; EFFECTIVE_LABEL_CFG="$BINARY_LABEL_CFG" ;;
         *)
             echo "Unknown experiment: $exp"
             return 1 ;;
@@ -93,6 +110,14 @@ find_checkpoint() {
     local ckpt_dir
     for bs in 4 8; do
         ckpt_dir="${base}/batch_size=${bs}"
+
+        if [ -n "$ITER_OVERRIDE" ]; then
+            if [ -f "${ckpt_dir}/${ITER_OVERRIDE}_iterations.pth" ]; then
+                echo "${ckpt_dir}/${ITER_OVERRIDE}_iterations.pth"
+                return 0
+            fi
+            continue
+        fi
 
         if [ -f "${ckpt_dir}/best_model.pth" ]; then
             echo "${ckpt_dir}/best_model.pth"
@@ -128,6 +153,8 @@ _resolve_checkpoint_and_args() {
     CKPT_TYPE="latest"
     if [[ "$CHECKPOINT" == *"best_model.pth"* ]]; then
         CKPT_TYPE="best"
+    elif [ -n "$ITER_OVERRIDE" ]; then
+        CKPT_TYPE="iter${ITER_OVERRIDE}"
     fi
 
     EXTRA_ARGS=""
@@ -141,6 +168,11 @@ _resolve_checkpoint_and_args() {
     [ "$HIER_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_moe=1"
     [ "$BINARY_TECHNIQUE" = "1" ] && EXTRA_ARGS+=" --fmoe_binary_technique=1"
     [ "$MERT_BACKBONE" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_backbone=1"
+    [ "$MERT_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_moe=1"
+    [ "$MERT_MOE_HIER" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_moe_hierarchical=1"
+
+    EFFECTIVE_TEMPORAL="${TEMPORAL_EXPERTS}"
+    ( [ "$MERT_MOE" = "1" ] || [ "$MERT_MOE_HIER" = "1" ] ) && EFFECTIVE_TEMPORAL="2:1,4:1,8:1,16:1,32:1,64:1,128:1,256:1"
 
     RWC_ARGS=""
     [ -f "$RWC_H5" ] && RWC_ARGS="--rwc_h5_path $RWC_H5 --rwc_split all"
@@ -170,7 +202,7 @@ run_umap() {
     UMAP_ARGS+=" --batch_size 4"
     UMAP_ARGS+=" --num_workers 4"
     UMAP_ARGS+=" --fmoe_spectral_expert=${SPECTRAL}"
-    UMAP_ARGS+=" --fmoe_temporal_experts=${TEMPORAL_EXPERTS}"
+    UMAP_ARGS+=" --fmoe_temporal_experts=${EFFECTIVE_TEMPORAL}"
     UMAP_ARGS+=" --fmoe_shared_gate=0"
     UMAP_ARGS+=" --fmoe_uniform_routing=0"
     UMAP_ARGS+=" --technique_label_config=${EFFECTIVE_LABEL_CFG}"
@@ -205,6 +237,9 @@ run_eval() {
         EVENT_LEVEL_ARG="--event_level"
         JSON_SUFFIX="_event_level"
     fi
+    if [ -n "$ITER_OVERRIDE" ]; then
+        JSON_SUFFIX="${JSON_SUFFIX}_iter${ITER_OVERRIDE}"
+    fi
 
     echo ""
     echo "============================================"
@@ -214,7 +249,7 @@ run_eval() {
     echo "  Checkpoint : ${CHECKPOINT} (${CKPT_TYPE})"
     echo "  Expert mask: ${EXPERT_MASK}"
     echo "  Spectral   : ${SPECTRAL}"
-    echo "  Temporal   : ${TEMPORAL_EXPERTS}"
+    echo "  Temporal   : ${EFFECTIVE_TEMPORAL}"
     echo "  Split      : ${SPLIT}"
     echo "  Device     : ${DEVICE}"
     echo "============================================"
@@ -242,9 +277,9 @@ print(f'  Best metric   : {bm} = {bv_str}')
         --device "$DEVICE" \
         --batch_size 4 \
         --num_workers 4 \
-        --max_iterations 500 \
+        --max_iterations 0 \
         --fmoe_spectral_expert=${SPECTRAL} \
-        --fmoe_temporal_experts="${TEMPORAL_EXPERTS}" \
+        --fmoe_temporal_experts="${EFFECTIVE_TEMPORAL}" \
         --fmoe_shared_gate=0 \
         --fmoe_uniform_routing=0 \
         --technique_label_config="${EFFECTIVE_LABEL_CFG}" \
@@ -271,7 +306,8 @@ ALL_EXPERIMENTS="baseline full no_onset no_note no_phrase \
     hier_multilevel hier_moe \
     multi_crnn crnn_moe shared_crnn_moe \
     binary_baseline binary_full binary_no_moe binary_detach_cues \
-    mert_baseline mert_binary"
+    mert_baseline mert_no_moe mert_binary \
+    mert_moe mert_moe_hierarchical mert_moe_binary"
 
 if [ "$UMAP_ONLY" = "1" ]; then
     if [ "$EXPERIMENT" = "all" ]; then
@@ -294,6 +330,9 @@ if [ "$EXPERIMENT" = "all" ]; then
         MODE_LABEL="Event-Level"
         JSON_SUFFIX="_event_level"
     fi
+    if [ -n "$ITER_OVERRIDE" ]; then
+        JSON_SUFFIX="${JSON_SUFFIX}_iter${ITER_OVERRIDE}"
+    fi
     echo "Running v2 evaluation [${MODE_LABEL}] for all expert composition experiments..."
     echo ""
     for e in $ALL_EXPERIMENTS; do
@@ -305,11 +344,16 @@ if [ "$EXPERIMENT" = "all" ]; then
     python3 -c "
 import json, glob, os
 event_level = ${EVENT_LEVEL}
+iter_override = '${ITER_OVERRIDE}'
 suffix = '_event_level' if event_level else ''
+if iter_override:
+    suffix = suffix + '_iter' + iter_override
 results = {}
 for f in sorted(glob.glob('${RESULTS_DIR}/*' + suffix + '.json')):
     name = os.path.splitext(os.path.basename(f))[0]
     if name.startswith('summary'):
+        continue
+    if not iter_override and ('_iter' in name):
         continue
     with open(f) as fp:
         results[name] = json.load(fp)

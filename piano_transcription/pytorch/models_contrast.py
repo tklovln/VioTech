@@ -244,10 +244,12 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                  multi_crnn_head=False,
                  crnn_moe_head=False,
                  shared_crnn_moe_head=False,
-                 mert_backbone=False):
+                 mert_backbone=False,
+                 mert_moe_head=False):
         super(Regress_onset_offset_frame_velocity_CRNN, self).__init__()
         self.detach_cues = detach_cues
         self._mert_backbone = mert_backbone
+        self._mert_moe = mert_moe_head
 
         sample_rate = 16000
         window_size = 2048
@@ -323,7 +325,13 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Frame-level Multi-Scale MoE technique branch (end-to-end, no GT boundaries)
         if self.predict_technique_frame_moe:
-            if shared_crnn_moe_head:
+            if mert_moe_head:
+                from mert_moe_backbone import MERTMoEBackbone, MERTMoEConfig
+                _cfg = (frame_moe_config
+                        if isinstance(frame_moe_config, MERTMoEConfig)
+                        else MERTMoEConfig())
+                self.frame_moe_head = MERTMoEBackbone(_cfg)
+            elif shared_crnn_moe_head:
                 _cfg = (frame_moe_config
                         if isinstance(frame_moe_config, SharedCNNMoEConfig)
                         else SharedCNNMoEConfig())
@@ -552,18 +560,6 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Frame-level Multi-Scale MoE technique branch (end-to-end)
         if self.predict_technique_frame_moe:
-            fmoe_conv2d_map = None
-            if hasattr(self, 'technique_acoustic_frame_moe'):
-                backbone = self.technique_acoustic_frame_moe
-                if self._mert_backbone:
-                    target_T = output_dict['reg_onset_output'].shape[1]
-                    fmoe_features = backbone(input, target_T=target_T)
-                elif backbone.output_conv2d_map:
-                    _, fmoe_features, fmoe_conv2d_map = backbone(logmel)
-                else:
-                    _, fmoe_features = backbone(logmel)
-            else:
-                fmoe_features = None  # multi-CRNN head has its own backbone
             # Transcription structural cues — max-pool across pitches
             reg_onset = output_dict['reg_onset_output']
             reg_offset = output_dict['reg_offset_output']
@@ -576,9 +572,27 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
             offset_cue = reg_offset.max(dim=-1, keepdim=True)[0]
             frame_cue = frame.max(dim=-1, keepdim=True)[0]
 
-            _fmoe_out = self.frame_moe_head(
-                fmoe_features, onset_cue, offset_cue, frame_cue,
-                logmel=logmel, conv2d_map=fmoe_conv2d_map)
+            if self._mert_moe:
+                _fmoe_out = self.frame_moe_head(
+                    input, onset_cue, offset_cue, frame_cue,
+                    target_T=reg_onset.shape[1])
+            else:
+                fmoe_conv2d_map = None
+                if hasattr(self, 'technique_acoustic_frame_moe'):
+                    backbone = self.technique_acoustic_frame_moe
+                    if self._mert_backbone:
+                        target_T = output_dict['reg_onset_output'].shape[1]
+                        fmoe_features = backbone(input, target_T=target_T)
+                    elif backbone.output_conv2d_map:
+                        _, fmoe_features, fmoe_conv2d_map = backbone(logmel)
+                    else:
+                        _, fmoe_features = backbone(logmel)
+                else:
+                    fmoe_features = None  # multi-CRNN head has its own backbone
+
+                _fmoe_out = self.frame_moe_head(
+                    fmoe_features, onset_cue, offset_cue, frame_cue,
+                    logmel=logmel, conv2d_map=fmoe_conv2d_map)
 
             _is_binary = (isinstance(_fmoe_out, tuple) and len(_fmoe_out) == 3
                           and isinstance(_fmoe_out[0], dict))

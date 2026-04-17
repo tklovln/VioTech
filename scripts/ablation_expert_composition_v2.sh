@@ -34,6 +34,9 @@
 #   binary_detach_cues : 4 binary heads + detach cues, experts 0+1+2
 #   mert_baseline   : frozen MERT-v1-330M backbone, experts 0+1+2
 #   mert_binary     : frozen MERT-v1-330M backbone + binary heads, experts 0+1+2
+#   mert_moe        : MERT Multi-Scale MoE (per-expert layer weights + 8-expert temporal pyramid + GRU)
+#   mert_moe_hierarchical : MERT Multi-Scale MoE + hierarchical prediction (L1 binary det → L2 fine-grained cls)
+#   mert_moe_binary : MERT Multi-Scale MoE + binary heads
 #   all           : run all above sequentially
 
 set -euo pipefail
@@ -70,6 +73,8 @@ run_train() {
     local BINARY_TECHNIQUE="${13:-0}"
     local LABEL_CFG_OVERRIDE="${14:-}"
     local MERT_BACKBONE="${15:-0}"
+    local MERT_MOE="${16:-0}"
+    local MERT_MOE_HIER="${17:-0}"
 
     echo ""
     echo "========================================================"
@@ -87,6 +92,8 @@ run_train() {
     echo "  Hier-MoE:         ${HIER_MOE}"
     echo "  Binary technique: ${BINARY_TECHNIQUE}"
     echo "  MERT backbone:    ${MERT_BACKBONE}"
+    echo "  MERT MoE:         ${MERT_MOE}"
+    echo "  MERT MoE Hier:    ${MERT_MOE_HIER}"
     echo "  Temporal experts: ${TEMPORAL_EXPERTS}"
     echo "  Device:           ${DEVICE}"
     echo "  Seed:             ${SEED}"
@@ -108,6 +115,11 @@ run_train() {
     [ "$HIER_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_hierarchical_moe=1 --fmoe_aux_weight=0.1"
     [ "$BINARY_TECHNIQUE" = "1" ] && EXTRA_ARGS+=" --fmoe_binary_technique=1"
     [ "$MERT_BACKBONE" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_backbone=1"
+    [ "$MERT_MOE" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_moe=1"
+    [ "$MERT_MOE_HIER" = "1" ] && EXTRA_ARGS+=" --fmoe_mert_moe_hierarchical=1"
+
+    local EFFECTIVE_TEMPORAL="${TEMPORAL_EXPERTS}"
+    ( [ "$MERT_MOE" = "1" ] || [ "$MERT_MOE_HIER" = "1" ] ) && EFFECTIVE_TEMPORAL="2:1,4:1,8:1,16:1,32:1,64:1,128:1,256:1"
 
     cd "${WORKSPACE}/piano_transcription"
 
@@ -140,7 +152,7 @@ run_train() {
         --technique_frame_moe_weight=1 \
         --frame_moe_balance_coeff=0.001 \
         --fmoe_spectral_expert=${SPECTRAL} \
-        --fmoe_temporal_experts="${TEMPORAL_EXPERTS}" \
+        --fmoe_temporal_experts="${EFFECTIVE_TEMPORAL}" \
         --fmoe_shared_gate=0 \
         --fmoe_uniform_routing=0 \
         --focal_gamma=2.0 \
@@ -148,7 +160,7 @@ run_train() {
         --technique_label_config="${EFFECTIVE_LABEL_CFG}" \
         --rwc_eval_h5_path=$RWC_H5 \
         --rwc_eval_split=all \
-        --rwc_eval_max_iterations=500 \
+        --rwc_eval_max_iterations=0 \
         $EXTRA_ARGS
 }
 
@@ -180,8 +192,16 @@ case "$EXPERIMENT" in
         run_train "binary_detach_cues_e012" "0,1,2" 0  1  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG" ;;
     mert_baseline)
         run_train "mert_baseline_e012" "0,1,2" 0  0  0  0  0  0  0  0  0  0  0  ""  1 ;;
+    mert_no_moe)
+        run_train "mert_no_moe_direct" "0,1,2" 0  0  0  1  0  0  0  0  0  0  0  ""  1 ;;
     mert_binary)
         run_train "mert_binary_e012" "0,1,2" 0  0  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG"  1 ;;
+    mert_moe)
+        run_train "mert_moe_e01234567" "" 0  0  0  0  0  0  0  0  0  0  0  ""  0  1 ;;
+    mert_moe_hierarchical)
+        run_train "mert_moe_hier_e01234567" "" 0  0  0  0  0  0  0  0  0  0  0  ""  0  1  1 ;;
+    mert_moe_binary)
+        run_train "mert_moe_binary_e01234567" "" 0  0  0  0  0  0  0  0  0  0  1  "$BINARY_LABEL_CFG"  0  1 ;;
     all)
         for e in baseline full no_onset no_note no_phrase \
                  only_onset only_note only_phrase \
@@ -189,7 +209,8 @@ case "$EXPERIMENT" in
                  hier_multilevel hier_moe \
                  multi_crnn crnn_moe shared_crnn_moe \
                  binary_baseline binary_full binary_no_moe binary_detach_cues \
-                 mert_baseline mert_binary; do
+                 mert_baseline mert_no_moe mert_binary \
+                 mert_moe mert_moe_hierarchical mert_moe_binary; do
             bash "$0" "$e" "$DEVICE"
         done
         ;;
@@ -200,7 +221,8 @@ case "$EXPERIMENT" in
         echo "           detach_cues freeze_trans no_moe hierarchical hier_multilevel hier_moe"
         echo "           multi_crnn crnn_moe shared_crnn_moe"
         echo "           binary_baseline binary_full binary_no_moe binary_detach_cues"
-        echo "           mert_baseline mert_binary all"
+        echo "           mert_baseline mert_binary"
+        echo "           mert_no_moe mert_moe mert_moe_hierarchical mert_moe_binary all"
         exit 1
         ;;
 esac
