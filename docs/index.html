@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VioTech — Frame-Level Violin Playing Technique Detection with Multi-Scale Mixture-of-Experts</title>
+  <meta name="description" content="VioTech: Frame-Level Violin Playing Technique Detection with Multi-Scale Mixture-of-Experts. ISMIR 2026." />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="VioTech — Frame-Level Violin Playing Technique Detection with Multi-Scale Mixture-of-Experts" />
+  <meta property="og:description" content="A cascade-free, frame-level violin playing technique detector built on a frozen MERT-v1-330M backbone with a Multi-Scale Mixture-of-Experts. ISMIR 2026." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="container">
+      <p class="venue">ISMIR 2026</p>
+      <h1 class="title">VioTech: Frame-Level Violin Playing Technique Detection<br />with Multi-Scale Mixture-of-Experts</h1>
+
+      <div class="authors">
+        <span class="author">Ting-Kang Wang</span>
+        <span class="author">Vincent K.&thinsp;M. Cheung</span>
+        <span class="author">Nan-Tien Lai</span>
+        <span class="author">Li Su</span>
+      </div>
+
+      <nav class="links">
+        <a class="btn" href="#" data-link="paper" aria-disabled="true">
+          <span class="ico">&#128196;</span> Paper
+        </a>
+        <a class="btn" href="https://github.com/tklovln/VioTech" target="_blank" rel="noopener">
+          <span class="ico">&lt;/&gt;</span> Code
+        </a>
+        <a class="btn" href="https://github.com/tklovln/audio-midi-marker" target="_blank" rel="noopener">
+          <span class="ico">&#127925;</span> Annotation Tool
+        </a>
+        <a class="btn" href="https://huggingface.co/m-a-p/MERT-v1-330M" target="_blank" rel="noopener">
+          <span class="ico">&#129303;</span> MERT Backbone
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- ABSTRACT -->
+    <section class="section" id="abstract">
+      <div class="container narrow">
+        <h2>Abstract</h2>
+        <p>
+          Automatic detection of violin playing techniques is central to computational
+          performance analysis, yet most systems first segment audio into notes and then
+          classify each note — a cascade whose onset/offset errors propagate downstream.
+          <strong>VioTech</strong> detects violin playing techniques <strong>directly at the
+          frame level</strong> (10&nbsp;ms&nbsp;/&nbsp;frame), removing the note pre-segmentation
+          stage entirely. It predicts three technique dimensions <em>in parallel</em> —
+          <strong>tonal technique</strong> (none&nbsp;/&nbsp;pizzicato&nbsp;/&nbsp;harmonics),
+          <strong>articulation</strong> (none&nbsp;/&nbsp;spiccato), and
+          <strong>legato</strong> (bow-change vs. sustained, framed as a binary regression
+          problem). The proposed model couples an <strong>HRPT transcription backbone</strong>
+          (providing onset/offset/frame cues) with a <strong>frozen MERT-v1-330M</strong>
+          acoustic backbone, on top of which <strong>N multi-scale temporal experts</strong>
+          (default <span class="mono">N&nbsp;=&nbsp;8</span>, receptive fields 20&nbsp;ms&ndash;2560&nbsp;ms)
+          are routed by <strong>per-task gating</strong>. On a cross-dataset (RWC) test set, the
+          Mixture-of-Experts routing yields large gains on the expressive, less frequent classes
+          (pizzicato, harmonics, spiccato), reaching a macro accuracy of <strong>86.5%</strong>.
+        </p>
+      </div>
+    </section>
+
+    <!-- HIGHLIGHTS -->
+    <section class="section alt" id="highlights">
+      <div class="container">
+        <h2>Highlights</h2>
+        <div class="cards">
+          <div class="card">
+            <div class="card-ico">&#9202;</div>
+            <h3>Frame-level &amp; cascade-free</h3>
+            <p>Technique labels are predicted every 10&nbsp;ms with no note onset/offset segmentation stage, avoiding cascading errors.</p>
+          </div>
+          <div class="card">
+            <div class="card-ico">&#129504;</div>
+            <h3>Multi-Scale Mixture-of-Experts</h3>
+            <p>8 temporal experts over a frozen MERT-v1-330M backbone, each with its own MERT layer weights and receptive field (20&nbsp;ms&ndash;2560&nbsp;ms).</p>
+          </div>
+          <div class="card">
+            <div class="card-ico">&#127919;</div>
+            <h3>Per-task gating</h3>
+            <p>Independent dense soft routing for tonal, articulation, and legato — revealing which time scales matter for each technique.</p>
+          </div>
+          <div class="card">
+            <div class="card-ico">&#127911;</div>
+            <h3>Legato as regression</h3>
+            <p>The first computational model of legato bow-change timing, via a Gaussian-peak binary regression target.</p>
+          </div>
+          <div class="card">
+            <div class="card-ico">&#128220;</div>
+            <h3>VioTech120 dataset</h3>
+            <p>120 manually annotated violin solo etudes (Paganini Op.1, Wohlfahrt Op.35, Kayser Op.20) with a dedicated annotation interface.</p>
+          </div>
+          <div class="card">
+            <div class="card-ico">&#128260;</div>
+            <h3>Transcription cues help</h3>
+            <p>Jointly fine-tuned onset/offset/frame cues from the HRPT backbone measurably improve technique detection.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- METHOD -->
+    <section class="section" id="method">
+      <div class="container narrow">
+        <h2>Method</h2>
+        <p>
+          Each 10-second audio segment is encoded by two backbones in parallel. The
+          <strong>HRPT transcription backbone</strong> supplies onset/offset/frame cues and is
+          jointly fine-tuned during technique training. The <strong>frozen MERT-v1-330M</strong>
+          acoustic backbone exposes all its hidden layers to a bank of temporal experts.
+        </p>
+
+        <figure class="pipeline">
+          <div class="pipe-row">
+            <div class="pipe-node input">Violin audio<br /><span>10&nbsp;s @ 100&nbsp;fps</span></div>
+            <div class="pipe-arrow">&rarr;</div>
+            <div class="pipe-branch">
+              <div class="pipe-node backbone">HRPT backbone<br /><span>onset / offset / frame cues</span></div>
+              <div class="pipe-node backbone frozen">Frozen MERT-v1-330M<br /><span>25 hidden layers</span></div>
+            </div>
+            <div class="pipe-arrow">&rarr;</div>
+            <div class="pipe-node moe">
+              Multi-Scale MoE
+              <div class="experts">
+                <span>20ms</span><span>40ms</span><span>80ms</span><span>160ms</span>
+                <span>320ms</span><span>640ms</span><span>1280ms</span><span>2560ms</span>
+              </div>
+            </div>
+            <div class="pipe-arrow">&rarr;</div>
+            <div class="pipe-branch heads">
+              <div class="pipe-node head">Tonal gate &amp; head</div>
+              <div class="pipe-node head">Articulation gate &amp; head</div>
+              <div class="pipe-node head">Legato gate &amp; head</div>
+            </div>
+          </div>
+        </figure>
+
+        <p class="caption">
+          Each expert computes a learnable weighted sum over MERT's hidden layers, projects
+          1024&rarr;128, then applies a depth-separable Conv1D (kernel = 2, 4, 8, &hellip;, 256 &rarr;
+          receptive field 20&nbsp;ms&ndash;2560&nbsp;ms), a bidirectional GRU, and an MLP. Per-task
+          gates route the experts independently for each technique dimension.
+        </p>
+      </div>
+    </section>
+
+    <!-- RESULTS -->
+    <section class="section alt" id="results">
+      <div class="container">
+        <h2>Results</h2>
+        <p class="section-lead">
+          Per-class accuracy on the <strong>RWC cross-dataset</strong> test set. Columns: Tonal
+          none/pizz/harm (TN/TP/TH), Articulation none/spiccato (AN/AS), Legato
+          sustained/bow-change (LS/LB).
+        </p>
+
+        <div class="table-wrap">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>TN</th><th>TP</th><th>TH</th>
+                <th>AN</th><th>AS</th>
+                <th>LS</th><th>LB</th>
+                <th>Macro</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="ours">
+                <td>VioTech (Ours)</td>
+                <td>79.07</td><td class="best">89.60</td><td class="best">88.84</td>
+                <td>97.78</td><td class="best">97.16</td>
+                <td>96.49</td><td>56.73</td>
+                <td class="best">86.52</td>
+              </tr>
+              <tr>
+                <td>w/o MoE</td>
+                <td class="best">85.98</td><td>40.85</td><td>69.62</td>
+                <td>94.43</td><td>61.41</td>
+                <td class="best">98.72</td><td class="best">68.96</td>
+                <td>74.28</td>
+              </tr>
+              <tr>
+                <td>w/o Layer Weight</td>
+                <td>86.11</td><td>93.68</td><td>65.44</td>
+                <td>98.74</td><td>83.66</td>
+                <td>97.00</td><td>57.65</td>
+                <td>83.18</td>
+              </tr>
+              <tr>
+                <td>w/o Transcription Cue</td>
+                <td>79.83</td><td>95.28</td><td>83.28</td>
+                <td>99.57</td><td>64.51</td>
+                <td>97.00</td><td>64.21</td>
+                <td>83.38</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="caption">
+          The MoE routing yields large gains on the expressive, less frequent classes
+          (pizzicato, harmonics, spiccato), especially under cross-dataset transfer.
+        </p>
+
+        <div class="chart-grid">
+          <figure class="chart-card">
+            <h3>Per-class accuracy</h3>
+            <div class="chart-controls">
+              <label>Dataset:
+                <select id="acc-dataset">
+                  <option value="rwc">RWC (cross-dataset)</option>
+                  <option value="viotech">VioTech (in-domain)</option>
+                </select>
+              </label>
+            </div>
+            <div class="canvas-wrap"><canvas id="accChart"></canvas></div>
+          </figure>
+
+          <figure class="chart-card">
+            <h3>Task-level metrics</h3>
+            <div class="chart-controls">
+              <label>Dataset:
+                <select id="task-dataset">
+                  <option value="rwc">RWC (cross-dataset)</option>
+                  <option value="viotech">VioTech (in-domain)</option>
+                </select>
+              </label>
+            </div>
+            <div class="canvas-wrap"><canvas id="taskChart"></canvas></div>
+          </figure>
+        </div>
+
+        <figure class="chart-card wide">
+          <h3>Expert routing — which time scales each task prefers</h3>
+          <p class="caption">
+            Global gate weights (%) over the 8 temporal experts (M0&nbsp;=&nbsp;20&nbsp;ms &hellip;
+            M7&nbsp;=&nbsp;2560&nbsp;ms). Legato relies on mid-to-long scales, tonal on short-to-mid
+            scales — a direct, interpretable readout of the model.
+          </p>
+          <div class="chart-controls">
+            <label>Dataset:
+              <select id="gate-dataset">
+                <option value="rwc">RWC (cross-dataset)</option>
+                <option value="viotech">VioTech (in-domain)</option>
+              </select>
+            </label>
+          </div>
+          <div class="canvas-wrap tall"><canvas id="gateChart"></canvas></div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- DATASET -->
+    <section class="section" id="dataset">
+      <div class="container narrow">
+        <h2>VioTech120 Dataset</h2>
+        <p>
+          VioTech120 comprises 120 manually annotated violin solo etudes (Paganini Op.1,
+          Wohlfahrt Op.35, Kayser Op.20). Each note carries technique labels (tonal /
+          articulation / legato) plus violin position and fingering, produced with a
+          purpose-built piano-roll web tool synchronized to the audio.
+        </p>
+        <div class="stat-row">
+          <div class="stat"><span class="num">120</span><span class="lbl">annotated etudes</span></div>
+          <div class="stat"><span class="num">55k+</span><span class="lbl">labelled notes</span></div>
+          <div class="stat"><span class="num">10&nbsp;ms</span><span class="lbl">frame resolution</span></div>
+          <div class="stat"><span class="num">3</span><span class="lbl">technique dimensions</span></div>
+        </div>
+        <p>
+          The annotation interface is open-sourced:
+          <a href="https://github.com/tklovln/audio-midi-marker" target="_blank" rel="noopener">tklovln/audio-midi-marker</a>.
+        </p>
+      </div>
+    </section>
+
+    <!-- CITATION -->
+    <section class="section alt" id="citation">
+      <div class="container narrow">
+        <h2>Citation</h2>
+        <p>If you find this work useful, please cite:</p>
+        <pre class="bibtex"><code>@inproceedings{wang2026viotech,
+  title     = {VioTech: Frame-Level Violin Playing Technique Detection
+               with Multi-Scale Mixture-of-Experts},
+  author    = {Wang, Ting-Kang and Cheung, Vincent K. M.
+               and Lai, Nan-Tien and Su, Li},
+  booktitle = {Proceedings of the 27th International Society for
+               Music Information Retrieval Conference (ISMIR)},
+  year      = {2026}
+}</code></pre>
+        <button class="copy-btn" id="copyBib">Copy BibTeX</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>
+        &copy; 2026 Ting-Kang Wang, Vincent K.&thinsp;M. Cheung, Nan-Tien Lai, Li Su.
+        Code released under the Apache License 2.0.
+      </p>
+      <p class="small">
+        Page template inspired by academic project pages. Built with plain HTML/CSS and
+        <a href="https://www.chartjs.org/" target="_blank" rel="noopener">Chart.js</a>.
+      </p>
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="data.js"></script>
+  <script src="charts.js"></script>
+</body>
+</html>
