@@ -5,11 +5,16 @@
   const INK = "#26222e";
   const SOFT = "#5f5870";
   const LINE = "#e7e2ef";
-  const PALETTE = {
-    Tonal: "#7c5fc0",         // feature-extraction purple
-    Articulation: "#c99a3a",  // transcription-cue gold
-    Legato: "#c94f6d"         // mixture-of-experts pink
+  // Monochrome purple ramp (light → dark), matching the diagram's accent hue.
+  const PURPLE = {
+    l1: "#cbbde8", // lightest
+    l2: "#a98fd6",
+    l3: "#8a6bc9",
+    l4: "#7c5fc0", // base accent
+    l5: "#5d4494",
+    l6: "#42305f"  // darkest
   };
+  const PURPLE_RAMP = [PURPLE.l1, PURPLE.l2, PURPLE.l3, PURPLE.l4, PURPLE.l5, PURPLE.l6];
 
   Chart.defaults.font.family =
     "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
@@ -27,11 +32,13 @@
     const labels = [];
     const values = [];
     const colors = [];
+    let idx = 0;
     ["Tonal", "Articulation", "Legato"].forEach((task) => {
       d[task].labels.forEach((cl, i) => {
         labels.push(`${task[0]}: ${cl}`);
         values.push(d[task].values[i]);
-        colors.push(PALETTE[task]);
+        colors.push(PURPLE_RAMP[idx % PURPLE_RAMP.length]);
+        idx++;
       });
     });
 
@@ -74,9 +81,9 @@
       data: {
         labels: t.labels,
         datasets: [
-          { label: "Accuracy", data: t.accuracy, backgroundColor: hexToRgba(PALETTE.Tonal, 0.85), borderRadius: 6 },
-          { label: "Macro-F1", data: t.macroF1, backgroundColor: hexToRgba(PALETTE.Articulation, 0.85), borderRadius: 6 },
-          { label: "Weighted-F1", data: t.weightedF1, backgroundColor: hexToRgba(PALETTE.Legato, 0.85), borderRadius: 6 }
+          { label: "Accuracy", data: t.accuracy, backgroundColor: hexToRgba(PURPLE.l2, 0.9), borderRadius: 6 },
+          { label: "Macro-F1", data: t.macroF1, backgroundColor: hexToRgba(PURPLE.l4, 0.9), borderRadius: 6 },
+          { label: "Weighted-F1", data: t.weightedF1, backgroundColor: hexToRgba(PURPLE.l6, 0.9), borderRadius: 6 }
         ]
       },
       options: {
@@ -104,14 +111,17 @@
       type: "bar",
       data: {
         labels: D.experts,
-        datasets: ["Tonal", "Articulation", "Legato"].map((task) => ({
-          label: task,
-          data: g[task],
-          backgroundColor: hexToRgba(PALETTE[task], 0.85),
-          borderColor: PALETTE[task],
-          borderWidth: 1,
-          borderRadius: 5
-        }))
+        datasets: ["Tonal", "Articulation", "Legato"].map((task, i) => {
+          const shade = [PURPLE.l2, PURPLE.l4, PURPLE.l6][i];
+          return {
+            label: task,
+            data: g[task],
+            backgroundColor: hexToRgba(shade, 0.9),
+            borderColor: shade,
+            borderWidth: 1,
+            borderRadius: 5
+          };
+        })
       },
       options: {
         responsive: true,

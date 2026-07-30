@@ -23,10 +23,26 @@
       <h1 class="title">VioTech: Frame-Level Violin Playing Technique Detection<br />with Multi-Scale Mixture-of-Experts</h1>
 
       <div class="authors">
-        <span class="author">Ting-Kang Wang</span>
-        <span class="author">Vincent K.&thinsp;M. Cheung</span>
-        <span class="author">Nan-Tien Lai</span>
-        <span class="author">Li Su</span>
+        <span class="author">Ting-Kang Wang<sup>1,4</sup></span>
+        <span class="author">Vincent K.&thinsp;M. Cheung<sup>2</sup></span>
+        <span class="author">Nan-Tien Lai<sup>3</sup></span>
+        <span class="author">Li Su<sup>1</sup></span>
+      </div>
+
+      <div class="affiliations">
+        <p>
+          <sup>1</sup>Institute of Information Science, Academia Sinica, Taipei, Taiwan&emsp;
+          <sup>2</sup>Sony Computer Science Laboratories, Inc., Tokyo, Japan
+        </p>
+        <p>
+          <sup>3</sup>National Taiwan University, Taipei, Taiwan&emsp;
+          <sup>4</sup>Original Content Center, Gamania Inc., Taipei, Taiwan
+        </p>
+        <p class="emails">
+          <a href="mailto:tim.tkwang@gmail.com">tim.tkwang@gmail.com</a>,
+          <a href="mailto:cheung@csl.sony.co.jp">cheung@csl.sony.co.jp</a>,
+          <a href="mailto:lisu@iis.sinica.edu.tw">lisu@iis.sinica.edu.tw</a>
+        </p>
       </div>
 
       <nav class="links">
@@ -36,12 +52,13 @@
         <a class="btn" href="https://github.com/tklovln/VioTech" target="_blank" rel="noopener">
           <span class="ico">&lt;/&gt;</span> Code
         </a>
+        <a class="btn" href="#dataset" data-link="dataset" aria-disabled="true">
+          <span class="ico">&#128190;</span> Dataset <span class="badge">coming soon</span>
+        </a>
         <a class="btn" href="https://github.com/tklovln/audio-midi-marker" target="_blank" rel="noopener">
           <span class="ico">&#127925;</span> Annotation Tool
         </a>
-        <a class="btn" href="https://huggingface.co/m-a-p/MERT-v1-330M" target="_blank" rel="noopener">
-          <span class="ico">&#129303;</span> MERT Backbone
-        </a>
+        
       </nav>
     </div>
   </header>
@@ -113,14 +130,14 @@
 
     <!-- METHOD -->
     <section class="section" id="method">
-      <div class="container narrow">
+      <div class="container method-body">
         <h2>Method</h2>
-        <p>
+        <!-- <p>
           Each 10-second audio segment is encoded by two backbones in parallel. The
           <strong>HRPT transcription backbone</strong> supplies onset/offset/frame cues and is
           jointly fine-tuned during technique training. The <strong>frozen MERT-v1-330M</strong>
           acoustic backbone exposes all its hidden layers to a bank of temporal experts.
-        </p>
+        </p> -->
 
         <figure class="arch-figure">
           <img src="model-architecture-3stage.png"
@@ -134,12 +151,12 @@
           </figcaption>
         </figure>
 
-        <p class="caption">
+        <!-- <p class="caption">
           Each expert computes a learnable weighted sum over MERT's hidden layers, projects
           1024&rarr;128, then applies a depth-separable Conv1D (kernel = 2, 4, 8, &hellip;, 256 &rarr;
           receptive field 20&nbsp;ms&ndash;2560&nbsp;ms), a bidirectional GRU, and an MLP. Per-task
           gates route the experts independently for each technique dimension.
-        </p>
+        </p> -->
       </div>
     </section>
 
@@ -253,26 +270,19 @@
     <section class="section" id="dataset">
       <div class="container narrow">
         <h2>VioTech120 Dataset</h2>
-        <p>
-          VioTech120 comprises 120 manually annotated violin solo etudes (Paganini Op.1,
-          Wohlfahrt Op.35, Kayser Op.20). Each note carries technique labels (tonal /
-          articulation / legato) plus violin position and fingering, produced with a
-          purpose-built piano-roll web tool synchronized to the audio.
-        </p>
+        
         <div class="stat-row">
           <div class="stat"><span class="num">120</span><span class="lbl">annotated etudes</span></div>
           <div class="stat"><span class="num">55k+</span><span class="lbl">labelled notes</span></div>
           <div class="stat"><span class="num">10&nbsp;ms</span><span class="lbl">frame resolution</span></div>
           <div class="stat"><span class="num">3</span><span class="lbl">technique dimensions</span></div>
         </div>
-        <p>
-          The annotation interface is open-sourced:
-          <a href="https://github.com/tklovln/audio-midi-marker" target="_blank" rel="noopener">tklovln/audio-midi-marker</a>.
-        </p>
+        <p>Coming Soon...</p>
+        
       </div>
     </section>
 
-    <!-- CITATION -->
+    <!-- CITATION
     <section class="section alt" id="citation">
       <div class="container narrow">
         <h2>Citation</h2>
@@ -288,7 +298,7 @@
 }</code></pre>
         <button class="copy-btn" id="copyBib">Copy BibTeX</button>
       </div>
-    </section>
+    </section> -->
   </main>
 
   <footer class="footer">
