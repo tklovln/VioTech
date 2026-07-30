@@ -2,13 +2,13 @@
   const D = window.VIOTECH_DATA;
   if (!D || typeof Chart === "undefined") return;
 
-  const INK = "#1a1a1e";
-  const SOFT = "#55555f";
-  const LINE = "#e4e6ea";
+  const INK = "#26222e";
+  const SOFT = "#5f5870";
+  const LINE = "#e7e2ef";
   const PALETTE = {
-    Tonal: "#7b2d26",
-    Articulation: "#c1440e",
-    Legato: "#b8860b"
+    Tonal: "#7c5fc0",         // feature-extraction purple
+    Articulation: "#c99a3a",  // transcription-cue gold
+    Legato: "#c94f6d"         // mixture-of-experts pink
   };
 
   Chart.defaults.font.family =

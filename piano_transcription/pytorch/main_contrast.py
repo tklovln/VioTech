@@ -141,12 +141,12 @@ def train(args):
     fmoe_multi_crnn = bool(getattr(args, 'fmoe_multi_crnn', 0))
     fmoe_crnn_moe = bool(getattr(args, 'fmoe_crnn_moe', 0))
     fmoe_shared_crnn_moe = bool(getattr(args, 'fmoe_shared_crnn_moe', 0))
-    fmoe_binary_technique = bool(getattr(args, 'fmoe_binary_technique', 0))
     fmoe_mert_backbone = bool(getattr(args, 'fmoe_mert_backbone', 0))
     fmoe_mert_moe = bool(getattr(args, 'fmoe_mert_moe', 0))
     fmoe_mert_moe_hier = bool(getattr(args, 'fmoe_mert_moe_hierarchical', 0))
     if fmoe_mert_moe_hier:
         fmoe_mert_moe = True
+    fmoe_mert_no_layer_weight = bool(getattr(args, 'fmoe_mert_no_layer_weight', 0))
     focal_gamma = getattr(args, 'focal_gamma', 0.0)
     print('technique weight: ', technique_weight)
     print('technique MoE weight: ', technique_moe_weight)
@@ -170,7 +170,6 @@ def train(args):
     print('Frame-MoE multi-CRNN: ', fmoe_multi_crnn)
     print('Frame-MoE CRNN-MoE: ', fmoe_crnn_moe)
     print('Frame-MoE Shared-CRNN-MoE: ', fmoe_shared_crnn_moe)
-    print('Frame-MoE binary technique: ', fmoe_binary_technique)
     print('Frame-MoE MERT backbone: ', fmoe_mert_backbone)
     print('Frame-MoE MERT MoE: ', fmoe_mert_moe)
     print('Frame-MoE MERT MoE Hierarchical: ', fmoe_mert_moe_hier)
@@ -292,9 +291,9 @@ def train(args):
             from mert_moe_backbone import MERTMoEConfig
             _mm_kwargs = dict(
                 use_cues=fmoe_use_cues,
-                binary_technique=fmoe_binary_technique,
                 expert_mask=fmoe_expert_mask,
                 hierarchical=fmoe_mert_moe_hier,
+                use_layer_weight=(not fmoe_mert_no_layer_weight),
             )
             if fmoe_temporal_experts:
                 _mm_kwargs['temporal_experts'] = fmoe_temporal_experts
@@ -309,7 +308,6 @@ def train(args):
                 uniform_routing=fmoe_uniform_routing,
                 temporal_experts=fmoe_temporal_experts,
                 use_cues=fmoe_use_cues,
-                binary_technique=fmoe_binary_technique,
             )
             if fmoe_top_k is not None:
                 _fmoe_kwargs['top_k'] = fmoe_top_k
@@ -1285,20 +1283,14 @@ def train(args):
         loss_frame_moe_balance = torch.tensor(0.0, device=device)
         loss_fmoe_aux = torch.tensor(0.0, device=device)
         fmoe_tonal = fmoe_artic = fmoe_legato = None
-        fmoe_binary_flag_losses = None
         _has_fmoe_output = (technique_frame_moe_weight > 0
-                            and ('fmoe_tonal_logits' in batch_output_dict
-                                 or 'fmoe_binary_probs' in batch_output_dict))
+                            and 'fmoe_tonal_logits' in batch_output_dict)
         if _has_fmoe_output:
             _fmoe_result = frame_multiscale_moe_losses(
                 batch_output_dict, batch_data_dict, device=device,
                 focal_gamma=focal_gamma)
-            if 'fmoe_binary_probs' in batch_output_dict:
-                fmoe_binary_flag_losses, loss_frame_moe_balance, loss_fmoe_aux = _fmoe_result
-                loss_frame_moe_technique = sum(fmoe_binary_flag_losses.values())
-            else:
-                fmoe_tonal, fmoe_artic, fmoe_legato, loss_frame_moe_balance, loss_fmoe_aux = _fmoe_result
-                loss_frame_moe_technique = fmoe_tonal + fmoe_artic + fmoe_legato
+            fmoe_tonal, fmoe_artic, fmoe_legato, loss_frame_moe_balance, loss_fmoe_aux = _fmoe_result
+            loss_frame_moe_technique = fmoe_tonal + fmoe_artic + fmoe_legato
 
         if contrast_weight > 0:
             loss_contrast = onset_binary_supcon_loss(batch_output_dict, batch_data_dict) + offset_binary_supcon_loss(batch_output_dict, batch_data_dict)
@@ -1378,16 +1370,12 @@ def train(args):
             writer.add_scalar('train/loss_frame_moe_balance', loss_frame_moe_balance.item(), iteration)
             if fmoe_aux_weight > 0:
                 writer.add_scalar('train/loss_fmoe_aux', loss_fmoe_aux.item(), iteration)
-            if fmoe_binary_flag_losses is not None:
-                for fname, floss in fmoe_binary_flag_losses.items():
-                    writer.add_scalar(f'train/loss_fmoe_{fname}', floss.item(), iteration)
-            else:
-                if fmoe_tonal is not None:
-                    writer.add_scalar('train/loss_fmoe_tonal', fmoe_tonal.item(), iteration)
-                if fmoe_artic is not None:
-                    writer.add_scalar('train/loss_fmoe_artic', fmoe_artic.item(), iteration)
-                if fmoe_legato is not None:
-                    writer.add_scalar('train/loss_fmoe_legato', fmoe_legato.item(), iteration)
+            if fmoe_tonal is not None:
+                writer.add_scalar('train/loss_fmoe_tonal', fmoe_tonal.item(), iteration)
+            if fmoe_artic is not None:
+                writer.add_scalar('train/loss_fmoe_artic', fmoe_artic.item(), iteration)
+            if fmoe_legato is not None:
+                writer.add_scalar('train/loss_fmoe_legato', fmoe_legato.item(), iteration)
 
         preview_loss = {
             'loss': loss.item(),
@@ -1542,9 +1530,6 @@ if __name__ == '__main__':
     parser_train.add_argument('--fmoe_shared_crnn_moe', type=int, default=0, choices=[0, 1],
         help='Use Shared-CNN MoE (1): shared CNN blocks 1-3 + per-expert block4 '
              '& GRU branches with multi-scale temporal kernels (0 = standard, default)')
-    parser_train.add_argument('--fmoe_binary_technique', type=int, default=0, choices=[0, 1],
-        help='Binary technique decomposition (1): replace multi-class tonal/artic with '
-             '4 independent binary heads (pizzicato/harmonic/spiccato/legato)')
     parser_train.add_argument('--fmoe_mert_backbone', type=int, default=0, choices=[0, 1],
         help='Use frozen MERT-v1-330M as technique feature extractor (1) instead of CRNN')
     parser_train.add_argument('--fmoe_mert_moe', type=int, default=0, choices=[0, 1],
@@ -1553,6 +1538,9 @@ if __name__ == '__main__':
     parser_train.add_argument('--fmoe_mert_moe_hierarchical', type=int, default=0, choices=[0, 1],
         help='MERT MoE + hierarchical prediction (1): binary detector L1 then '
              'fine-grained classifier L2, composed log-probs')
+    parser_train.add_argument('--fmoe_mert_no_layer_weight', type=int, default=0, choices=[0, 1],
+        help='Ablation (1): disable per-expert MERT layer weighting; each expert uses '
+             'a fixed uniform average over MERT layers ("w/o MERT Layer Weight")')
     parser_train.add_argument('--focal_gamma', type=float, default=0.0,
         help='Focal loss gamma for technique CE losses (0 = standard CE, 2.0 recommended)')
     parser_train.add_argument('--patience', type=int, default=0,

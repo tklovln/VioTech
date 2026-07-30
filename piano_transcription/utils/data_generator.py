@@ -791,15 +791,6 @@ class CustomDataset(object):
                 data_dict['articulation'] = artic_roll
                 data_dict['legato'] = legato_roll
 
-                # Binary flag decomposition (when config enables it)
-                if self._label_cfg.binary_technique:
-                    for flag_name, (src_task, src_id) in \
-                            self._label_cfg.binary_flag_sources.items():
-                        if src_task == 'tonal_technique':
-                            data_dict[flag_name] = (tonal_roll == src_id).astype(np.float32)
-                        elif src_task == 'articulation':
-                            data_dict[flag_name] = (artic_roll == src_id).astype(np.float32)
-
                 # Note-level arrays for MoE technique head
                 data_dict['note_onset_frames']    = note_onset_frames
                 data_dict['note_offset_frames']   = note_offset_frames

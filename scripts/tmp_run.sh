@@ -1,3 +1,0 @@
-bash scripts/ablation_expert_composition_v2.sh mert_moe_hierarchical
-bash scripts/ablation_eval_expert_composition_v2.sh mert_moe_hierarchical
-python scripts/export_figures.py

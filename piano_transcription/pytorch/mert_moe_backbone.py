@@ -56,19 +56,20 @@ class MERTMoEConfig:
     num_tonal_classes: int = 4
     num_artic_classes: int = 4
     expert_mask: Optional[Tuple[int, ...]] = None
-    binary_technique: bool = False
     hierarchical: bool = False
     layer_init_sigma: float = 4.0
+    # Ablation: when False, each expert uses a fixed uniform average over MERT
+    # layers instead of learned per-expert layer weights ("w/o MERT Layer Weight").
+    use_layer_weight: bool = True
 
 
 class MERTMoEBackbone(nn.Module):
     """MERT Multi-Scale MoE with per-expert layer weighting.
 
     Forward returns the same format as FrameMultiScaleMoEHead:
-      Multiclass: (tonal_logits, artic_logits, legato_prob,
-                   gp_tonal, gp_artic, gp_legato,
-                   aux_tonal, aux_artic, aux_legato)
-      Binary:     (probs_dict, gate_probs_dict, aux_dict)
+      (tonal_logits, artic_logits, legato_prob,
+       gp_tonal, gp_artic, gp_legato,
+       aux_tonal, aux_artic, aux_legato)
     """
 
     def __init__(self, cfg: MERTMoEConfig = None):
@@ -162,29 +163,9 @@ class MERTMoEBackbone(nn.Module):
         # ---------- Gates & heads ----------
         gate_in = N * GP + cue_total
         gate_hidden = cfg.expert_hidden // 2
-        self._binary_mode = cfg.binary_technique
         self._hierarchical = cfg.hierarchical
 
-        if cfg.binary_technique:
-            self._binary_flag_names = ['pizzicato', 'harmonic', 'spiccato', 'legato']
-            self.gates = nn.ModuleDict({
-                name: _Gate(gate_in, num_active, gate_hidden, cfg.gate_dropout)
-                for name in self._binary_flag_names
-            })
-            self.layer_norms = nn.ModuleDict({
-                name: nn.LayerNorm(cfg.shared_dim)
-                for name in self._binary_flag_names
-            })
-            self.heads = nn.ModuleDict({
-                name: nn.Linear(cfg.shared_dim, 1)
-                for name in self._binary_flag_names
-            })
-            self.aux_heads = nn.ModuleDict({
-                name: nn.ModuleList([
-                    nn.Linear(cfg.shared_dim, 1) for _ in range(num_active)
-                ]) for name in self._binary_flag_names
-            })
-        elif cfg.hierarchical:
+        if cfg.hierarchical:
             S = cfg.shared_dim
             Hh = cfg.expert_hidden // 2
             K_tonal = cfg.num_tonal_classes - 1
@@ -320,7 +301,12 @@ class MERTMoEBackbone(nn.Module):
         gru_outputs = []
         gate_parts = []
         for i in range(self.n_experts_total):
-            w = F.softmax(self.layer_weights[i], dim=0)
+            if self.cfg.use_layer_weight:
+                w = F.softmax(self.layer_weights[i], dim=0)
+            else:
+                # Ablation: fixed uniform average over all MERT layers.
+                w = torch.full_like(self.layer_weights[i],
+                                    1.0 / self.layer_weights[i].numel())
             feat = torch.einsum("l b t d, l -> b t d", all_hidden, w)
             feat = self.projections[i](feat)
             if feat.shape[1] != target_T:
@@ -367,21 +353,6 @@ class MERTMoEBackbone(nn.Module):
         def _mix(gp, ln):
             h = (gp.unsqueeze(-1) * expert_outs).sum(dim=-2)
             return F.relu(ln(h))
-
-        if self._binary_mode:
-            gate_probs = {}
-            probs = {}
-            aux = {}
-            for name in self._binary_flag_names:
-                gp = self._get_gate_probs(self.gates[name], gate_in)
-                gate_probs[name] = gp
-                probs[name] = torch.sigmoid(
-                    self.heads[name](_mix(gp, self.layer_norms[name])))
-                aux[name] = [
-                    torch.sigmoid(h(expert_list[i]))
-                    for i, h in enumerate(self.aux_heads[name])
-                ]
-            return probs, gate_probs, aux
 
         gp_tonal = self._get_gate_probs(self.gate_tonal, gate_in)
         gp_artic = self._get_gate_probs(self.gate_artic, gate_in)

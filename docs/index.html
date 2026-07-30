@@ -122,29 +122,16 @@
           acoustic backbone exposes all its hidden layers to a bank of temporal experts.
         </p>
 
-        <figure class="pipeline">
-          <div class="pipe-row">
-            <div class="pipe-node input">Violin audio<br /><span>10&nbsp;s @ 100&nbsp;fps</span></div>
-            <div class="pipe-arrow">&rarr;</div>
-            <div class="pipe-branch">
-              <div class="pipe-node backbone">HRPT backbone<br /><span>onset / offset / frame cues</span></div>
-              <div class="pipe-node backbone frozen">Frozen MERT-v1-330M<br /><span>25 hidden layers</span></div>
-            </div>
-            <div class="pipe-arrow">&rarr;</div>
-            <div class="pipe-node moe">
-              Multi-Scale MoE
-              <div class="experts">
-                <span>20ms</span><span>40ms</span><span>80ms</span><span>160ms</span>
-                <span>320ms</span><span>640ms</span><span>1280ms</span><span>2560ms</span>
-              </div>
-            </div>
-            <div class="pipe-arrow">&rarr;</div>
-            <div class="pipe-branch heads">
-              <div class="pipe-node head">Tonal gate &amp; head</div>
-              <div class="pipe-node head">Articulation gate &amp; head</div>
-              <div class="pipe-node head">Legato gate &amp; head</div>
-            </div>
-          </div>
+        <figure class="arch-figure">
+          <img src="model-architecture-3stage.png"
+               alt="VioTech three-stage architecture: Feature Extraction (Log-Mel + frozen MERT), Transcription Cue Generation (frame-level CRNN + GRU producing onset/frame/offset), and Mixture-of-Experts Prediction (N experts routed by a gate network to a weighted sum for tonal/articulation/legato prediction)." />
+          <figcaption>
+            The three-stage VioTech pipeline: <strong>Feature Extraction</strong> (Log-Mel
+            spectrogram + frozen MERT), <strong>Transcription Cue Generation</strong>
+            (frame-level CRNNs + GRUs producing onset/frame/offset cues), and
+            <strong>Mixture-of-Experts Prediction</strong> (N temporal experts routed by a gate
+            network into a weighted sum for tonal / articulation / legato).
+          </figcaption>
         </figure>
 
         <p class="caption">

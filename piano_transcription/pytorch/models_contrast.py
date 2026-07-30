@@ -13,25 +13,14 @@ import torch.nn.functional as F
 from torchlibrosa.stft import Spectrogram, LogmelFilterBank
 from pytorch_utils import move_data_to_device
 
-try:
-    from multilabel_technique_model import NoteWiseTechniqueHead
-except ImportError:
-    NoteWiseTechniqueHead = None
-
 from note_slicer import NoteSlicer, NoteSlicerConfig
-from moe_technique import MoETechniqueHead, MoEConfig
-from moe_zone_specialist import ZoneMoETechniqueHead, ZoneMoEConfig
-from moe_zone_pertask import PerTaskZoneMoEHead, PerTaskZoneMoEConfig
 from moe_frame_multiscale import (FrameMultiScaleMoEHead, FrameMultiScaleMoEConfig,
-                                  FrameDirectHead, FrameMultiCRNNMoEHead,
-                                  FrameMultiCRNNMoEConfig)
-from hierarchical_frame import (FrameHierarchicalHead, FrameHierarchicalConfig,
-                               FrameHierarchicalMultiLevelHead,
-                               FrameHierarchicalMultiLevelConfig,
-                               FrameHierarchicalMoEHead,
-                               FrameHierarchicalMoEConfig)
-from moe_crnn_backbone import (CRNNMoEBackbone, CRNNMoEConfig,
-                               SharedCNNMoEBackbone, SharedCNNMoEConfig)
+                                  FrameDirectHead)
+
+# The compared-approach / ablation heads below are not part of the VioTech
+# (MERT-MoE) paper pipeline; they are imported lazily only inside the branches
+# that build them, so the model factory stays importable without them.
+NoteWiseTechniqueHead = None
 
 
 def init_layer(layer):
@@ -303,6 +292,7 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Note-level MoE technique branch
         if self.predict_technique_moe:
+            from moe_technique import MoETechniqueHead, MoEConfig
             self.technique_acoustic_moe = AcousticModelCRnn8Dropout(
                 classes_num, midfeat, momentum, output_features=True)
             self.note_slicer = NoteSlicer(slicer_config or NoteSlicerConfig())
@@ -310,6 +300,7 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Zone-Specialized MoE technique branch
         if self.predict_technique_moe_zone:
+            from moe_zone_specialist import ZoneMoETechniqueHead, ZoneMoEConfig
             self.technique_acoustic_zone = AcousticModelCRnn8Dropout(
                 classes_num, midfeat, momentum, output_features=True)
             self.note_slicer_zone = NoteSlicer(slicer_config or NoteSlicerConfig())
@@ -317,6 +308,7 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
 
         # Per-Task Gate Zone MoE technique branch
         if self.predict_technique_moe_zone_pt:
+            from moe_zone_pertask import PerTaskZoneMoEHead, PerTaskZoneMoEConfig
             self.technique_acoustic_zone_pt = AcousticModelCRnn8Dropout(
                 classes_num, midfeat, momentum, output_features=True)
             self.note_slicer_zone_pt = NoteSlicer(slicer_config or NoteSlicerConfig())
@@ -332,21 +324,27 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                         else MERTMoEConfig())
                 self.frame_moe_head = MERTMoEBackbone(_cfg)
             elif shared_crnn_moe_head:
+                from moe_crnn_backbone import SharedCNNMoEBackbone, SharedCNNMoEConfig
                 _cfg = (frame_moe_config
                         if isinstance(frame_moe_config, SharedCNNMoEConfig)
                         else SharedCNNMoEConfig())
                 self.frame_moe_head = SharedCNNMoEBackbone(_cfg)
             elif crnn_moe_head:
+                from moe_crnn_backbone import CRNNMoEBackbone, CRNNMoEConfig
                 _cfg = (frame_moe_config
                         if isinstance(frame_moe_config, CRNNMoEConfig)
                         else CRNNMoEConfig())
                 self.frame_moe_head = CRNNMoEBackbone(_cfg)
             elif multi_crnn_head:
+                from moe_frame_multiscale import (FrameMultiCRNNMoEHead,
+                                                  FrameMultiCRNNMoEConfig)
                 _cfg = (frame_moe_config
                         if isinstance(frame_moe_config, FrameMultiCRNNMoEConfig)
                         else FrameMultiCRNNMoEConfig())
                 self.frame_moe_head = FrameMultiCRNNMoEHead(_cfg)
             elif hierarchical_multilevel_head:
+                from hierarchical_frame import (FrameHierarchicalMultiLevelHead,
+                                                FrameHierarchicalMultiLevelConfig)
                 self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
                     classes_num, midfeat, momentum,
                     output_features=True, output_conv2d_map=True)
@@ -356,6 +354,8 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                         else FrameHierarchicalMultiLevelConfig())
                 self.frame_moe_head = FrameHierarchicalMultiLevelHead(_cfg)
             elif hierarchical_moe_head:
+                from hierarchical_frame import (FrameHierarchicalMoEHead,
+                                                FrameHierarchicalMoEConfig)
                 self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
                     classes_num, midfeat, momentum,
                     output_features=True)
@@ -365,6 +365,8 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                         else FrameHierarchicalMoEConfig())
                 self.frame_moe_head = FrameHierarchicalMoEHead(_cfg)
             elif hierarchical_head:
+                from hierarchical_frame import (FrameHierarchicalHead,
+                                                FrameHierarchicalConfig)
                 self.technique_acoustic_frame_moe = AcousticModelCRnn8Dropout(
                     classes_num, midfeat, momentum,
                     output_features=True)
@@ -594,28 +596,17 @@ class Regress_onset_offset_frame_velocity_CRNN(nn.Module):
                     fmoe_features, onset_cue, offset_cue, frame_cue,
                     logmel=logmel, conv2d_map=fmoe_conv2d_map)
 
-            _is_binary = (isinstance(_fmoe_out, tuple) and len(_fmoe_out) == 3
-                          and isinstance(_fmoe_out[0], dict))
-            if _is_binary:
-                probs, gates, aux = _fmoe_out
-                output_dict['fmoe_binary_probs'] = probs
-                output_dict['fmoe_binary_gates'] = gates
-                output_dict['fmoe_binary_aux'] = aux
-                for _fname, _fprob in probs.items():
-                    output_dict[f'fmoe_{_fname}_prob'] = _fprob
-                output_dict['fmoe_tonal_logits'] = None
-            else:
-                (fm_t, fm_a, fm_l, fg_t, fg_a, fg_l,
-                 aux_t, aux_a, aux_l) = _fmoe_out
-                output_dict['fmoe_tonal_logits'] = fm_t
-                output_dict['fmoe_artic_logits'] = fm_a
-                output_dict['fmoe_legato_prob']  = fm_l
-                output_dict['fmoe_gate_tonal']   = fg_t
-                output_dict['fmoe_gate_artic']   = fg_a
-                output_dict['fmoe_gate_legato']  = fg_l
-                output_dict['fmoe_aux_tonal']    = aux_t
-                output_dict['fmoe_aux_artic']    = aux_a
-                output_dict['fmoe_aux_legato']   = aux_l
+            (fm_t, fm_a, fm_l, fg_t, fg_a, fg_l,
+             aux_t, aux_a, aux_l) = _fmoe_out
+            output_dict['fmoe_tonal_logits'] = fm_t
+            output_dict['fmoe_artic_logits'] = fm_a
+            output_dict['fmoe_legato_prob']  = fm_l
+            output_dict['fmoe_gate_tonal']   = fg_t
+            output_dict['fmoe_gate_artic']   = fg_a
+            output_dict['fmoe_gate_legato']  = fg_l
+            output_dict['fmoe_aux_tonal']    = aux_t
+            output_dict['fmoe_aux_artic']    = aux_a
+            output_dict['fmoe_aux_legato']   = aux_l
 
         return output_dict
 

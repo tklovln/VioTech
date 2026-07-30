@@ -42,114 +42,12 @@ LEGATO_NAMES = {0: 'sustained', 1: 'bow_change'}
 EXPERT_NAMES = {0: 'Onset', 1: 'Note', 2: 'Phrase', 3: 'Spectral'}  # overridden at runtime
 
 
-BINARY_FLAG_NAMES = ['pizzicato', 'harmonic', 'spiccato', 'legato']
-
-
 def _reload_label_config(config_path):
     """Re-initialise the label singleton and update module-level name dicts."""
     global _label_cfg, TONAL_NAMES, ARTIC_NAMES
     _label_cfg = get_technique_labels(config_path)
     TONAL_NAMES = _label_cfg.tonal_names
     ARTIC_NAMES = _label_cfg.artic_names
-
-
-def _run_binary_eval_loop(model, test_loader, device, dataset_label='dataset'):
-    """Frame-level evaluation loop for binary technique flags."""
-    flag_names = BINARY_FLAG_NAMES
-    all_gt = {name: [] for name in flag_names}
-    all_pred = {name: [] for name in flag_names}
-    total_frames = 0
-
-    gate_global = {name: None for name in flag_names}
-    gate_by_class = {name: {} for name in flag_names}
-
-    with torch.no_grad():
-        for batch_idx, batch_data_dict in enumerate(test_loader):
-            for key in batch_data_dict.keys():
-                batch_data_dict[key] = move_data_to_device(batch_data_dict[key], device)
-
-            output_dict = model(batch_data_dict['waveform'])
-
-            if 'fmoe_binary_probs' not in output_dict:
-                continue
-
-            if 'frame_roll' in batch_data_dict:
-                active = (batch_data_dict['frame_roll'].sum(dim=-1) > 0)
-            else:
-                first_prob = next(iter(output_dict['fmoe_binary_probs'].values()))
-                B, T_p = first_prob.shape[:2]
-                active = torch.ones(B, T_p, dtype=torch.bool, device=device)
-
-            probs_dict = output_dict['fmoe_binary_probs']
-            gates_dict = output_dict.get('fmoe_binary_gates', {})
-
-            first_prob = next(iter(probs_dict.values()))
-            T_pred = first_prob.shape[1]
-            T_active = active.shape[1]
-            T = min(T_pred, T_active)
-            active = active[:, :T]
-
-            B = active.shape[0]
-            for b in range(B):
-                m = active[b].cpu().numpy().astype(bool)
-                n_active = m.sum()
-                if n_active == 0:
-                    continue
-                total_frames += n_active
-
-                for name in flag_names:
-                    prob = probs_dict[name][b, :T].squeeze(-1)
-                    pred = (prob > 0.5).long().cpu().numpy()[m]
-                    all_pred[name].extend(pred)
-
-                    gt_tensor = batch_data_dict.get(name)
-                    if gt_tensor is not None:
-                        if name == 'legato':
-                            gt = (gt_tensor[b, :T] > 0.5).long().cpu().numpy()[m]
-                        else:
-                            gt = (gt_tensor[b, :T] > 0.5).long().cpu().numpy()[m]
-                        all_gt[name].extend(gt)
-
-                        gp = gates_dict.get(name)
-                        _accum_gate(name, gp, b, m, gt,
-                                    gate_global, gate_by_class, T)
-
-            if (batch_idx + 1) % 20 == 0:
-                print(f'  [{dataset_label}] batch {batch_idx + 1}: '
-                      f'{total_frames} active frames accumulated')
-
-    result = {}
-    for name in flag_names:
-        result[name] = {
-            'gt': np.array(all_gt[name], dtype=int),
-            'pred': np.array(all_pred[name], dtype=int),
-        }
-    return result, gate_global, gate_by_class, total_frames
-
-
-def _tonal_none_joint_from_binary(result):
-    """GT without pizzicato and without harmonic → multiclass-style tonal 'none'.
-
-    Correct prediction on those frames: both binary heads predict negative (0).
-    Aligned frame order is guaranteed by _run_binary_eval_loop.
-    """
-    if 'pizzicato' not in result or 'harmonic' not in result:
-        return None
-    g_p = result['pizzicato']['gt']
-    g_h = result['harmonic']['gt']
-    p_p = result['pizzicato']['pred']
-    p_h = result['harmonic']['pred']
-    n = min(len(g_p), len(g_h), len(p_p), len(p_h))
-    if n == 0:
-        return None
-    g_p, g_h = g_p[:n], g_h[:n]
-    p_p, p_h = p_p[:n], p_h[:n]
-    mask = (g_p == 0) & (g_h == 0)
-    support = int(mask.sum())
-    if support == 0:
-        return {'accuracy': 0.0, 'support': 0}
-    correct = ((p_p[mask] == 0) & (p_h[mask] == 0)).mean()
-    return {'accuracy': round(float(correct), 4), 'support': support}
 
 
 def _run_eval_loop(model, test_loader, device, dataset_label='dataset'):
@@ -257,50 +155,6 @@ def _accum_gate(task, gate_tensor, b, active_mask, gt_arr, gate_global, gate_by_
         gate_by_class[task][int(cls_id)] = (s + g[cls_mask].sum(axis=0), c + int(cls_mask.sum()))
 
 
-def _print_binary_results(banner, result, gate_global, gate_by_class, total_frames):
-    """Print results for binary technique flag evaluation."""
-    print()
-    print('=' * 70)
-    print(f'  {banner} [Binary Flags] — Total active frames evaluated: {total_frames}')
-    print('=' * 70)
-    print()
-    binary_cls_names = {0: 'negative', 1: 'positive'}
-    for name in BINARY_FLAG_NAMES:
-        if name not in result:
-            continue
-        gt = result[name]['gt']
-        pred = result[name]['pred']
-        _print_multiclass_report(f'Binary: {name}', gt, pred, binary_cls_names)
-        _print_pertask_gate(name, gate_global.get(name),
-                            gate_by_class.get(name, {}), binary_cls_names)
-    joint = _tonal_none_joint_from_binary(result)
-    if joint is not None and joint.get('support', 0) > 0:
-        print('-' * 70)
-        print('  Joint (multiclass-style): tonal none  [GT: no pizz & no harmonic]')
-        print('-' * 70)
-        print(f"    accuracy  {joint['accuracy']:.4f}  (support {joint['support']})")
-        print('    (correct = both heads predict negative)')
-        print()
-
-
-def _build_binary_results_dict(result, gate_global, gate_by_class, total_frames):
-    """Build JSON-serialisable results dict for binary technique flags."""
-    binary_cls_names = {0: 'negative', 1: 'positive'}
-    out = {'total_active_frames': int(total_frames), 'gate_distribution': {}}
-    for name in BINARY_FLAG_NAMES:
-        if name not in result:
-            continue
-        gt = result[name]['gt']
-        pred = result[name]['pred']
-        out[name] = _compute_metrics_dict(gt, pred, binary_cls_names)
-        out['gate_distribution'][name] = _gate_to_dict(
-            gate_global, gate_by_class, name, binary_cls_names)
-    joint = _tonal_none_joint_from_binary(result)
-    if joint is not None:
-        out['tonal_none_joint'] = joint
-    return out
-
-
 def _print_results(banner, tonal_gt, tonal_pred, artic_gt, artic_pred,
                    legato_gt, legato_pred, gate_global, gate_by_class, total_frames):
     print()
@@ -378,7 +232,6 @@ def evaluate(args):
     fmoe_hierarchical = bool(getattr(args, 'fmoe_hierarchical', 0))
     fmoe_hierarchical_multilevel = bool(getattr(args, 'fmoe_hierarchical_multilevel', 0))
     fmoe_hierarchical_moe = bool(getattr(args, 'fmoe_hierarchical_moe', 0))
-    fmoe_binary_technique = bool(getattr(args, 'fmoe_binary_technique', 0))
     fmoe_mert_backbone = bool(getattr(args, 'fmoe_mert_backbone', 0))
     fmoe_mert_moe = bool(getattr(args, 'fmoe_mert_moe', 0))
     fmoe_mert_moe_hier = bool(getattr(args, 'fmoe_mert_moe_hierarchical', 0))
@@ -466,9 +319,9 @@ def evaluate(args):
         from mert_moe_backbone import MERTMoEConfig
         _mm_kw = dict(
             use_cues=fmoe_use_cues,
-            binary_technique=fmoe_binary_technique,
             expert_mask=fmoe_expert_mask,
             hierarchical=fmoe_mert_moe_hier,
+            use_layer_weight=(not bool(getattr(args, 'fmoe_mert_no_layer_weight', 0))),
         )
         if fmoe_temporal_experts:
             _mm_kw['temporal_experts'] = fmoe_temporal_experts
@@ -503,7 +356,6 @@ def evaluate(args):
             uniform_routing=bool(getattr(args, 'fmoe_uniform_routing', 0)),
             temporal_experts=fmoe_temporal_experts,
             use_cues=fmoe_use_cues,
-            binary_technique=fmoe_binary_technique,
         )
         fmoe_top_k = getattr(args, 'fmoe_top_k', None)
         if fmoe_top_k is not None:
@@ -618,47 +470,24 @@ def evaluate(args):
     print()
 
     if event_level:
-        if fmoe_binary_technique:
-            result_data, total_active, total_tc = _run_event_level_binary_eval_loop(
-                model, test_loader, device, dataset_label='Viotech')
-            if total_active > 0:
-                _print_event_level_binary_results(
-                    'Viotech Frame-MoE Binary (event-level)',
-                    result_data, total_active, total_tc)
-                json_output['viotech'] = _build_event_level_binary_results_dict(
-                    result_data, total_active, total_tc)
-            else:
-                print('No active frames found in the viotech test set.')
+        results = _run_event_level_eval_loop(
+            model, test_loader, device, dataset_label='Viotech')
+        (t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc) = results
+        if total_active > 0:
+            _print_event_level_results(
+                'Viotech Frame-MoE (event-level)',
+                t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
+            json_output['viotech'] = _build_event_level_results_dict(
+                t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
         else:
-            results = _run_event_level_eval_loop(
-                model, test_loader, device, dataset_label='Viotech')
-            (t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc) = results
-            if total_active > 0:
-                _print_event_level_results(
-                    'Viotech Frame-MoE (event-level)',
-                    t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
-                json_output['viotech'] = _build_event_level_results_dict(
-                    t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
-            else:
-                print('No active frames found in the viotech test set.')
+            print('No active frames found in the viotech test set.')
     else:
-        if fmoe_binary_technique:
-            results = _run_binary_eval_loop(model, test_loader, device, dataset_label='Viotech')
-            result_data, gate_global, gate_by_class, total_frames = results
-            if total_frames > 0:
-                _print_binary_results('Viotech Frame-MoE Binary (end-to-end)',
-                                      result_data, gate_global, gate_by_class, total_frames)
-                json_output['viotech'] = _build_binary_results_dict(
-                    result_data, gate_global, gate_by_class, total_frames)
-            else:
-                print('No active frames found in the viotech test set.')
+        results = _run_eval_loop(model, test_loader, device, dataset_label='Viotech')
+        if results[-1] > 0:
+            _print_results('Viotech Frame-MoE (end-to-end)', *results)
+            json_output['viotech'] = _build_results_dict(*results)
         else:
-            results = _run_eval_loop(model, test_loader, device, dataset_label='Viotech')
-            if results[-1] > 0:
-                _print_results('Viotech Frame-MoE (end-to-end)', *results)
-                json_output['viotech'] = _build_results_dict(*results)
-            else:
-                print('No active frames found in the viotech test set.')
+            print('No active frames found in the viotech test set.')
 
     # ---- RWC evaluation (optional) ----
     rwc_path = getattr(args, 'rwc_h5_path', None)
@@ -702,47 +531,24 @@ def evaluate(args):
         )
 
         if event_level:
-            if fmoe_binary_technique:
-                result_data, total_active, total_tc = _run_event_level_binary_eval_loop(
-                    model, rwc_loader, device, dataset_label='RWC')
-                if total_active > 0:
-                    _print_event_level_binary_results(
-                        'RWC Frame-MoE Binary (event-level, cross-dataset)',
-                        result_data, total_active, total_tc)
-                    json_output['rwc'] = _build_event_level_binary_results_dict(
-                        result_data, total_active, total_tc)
-                else:
-                    print('[RWC] No active frames found.')
+            rwc_res = _run_event_level_eval_loop(
+                model, rwc_loader, device, dataset_label='RWC')
+            (t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc) = rwc_res
+            if total_active > 0:
+                _print_event_level_results(
+                    'RWC Frame-MoE (event-level, cross-dataset)',
+                    t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
+                json_output['rwc'] = _build_event_level_results_dict(
+                    t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
             else:
-                rwc_res = _run_event_level_eval_loop(
-                    model, rwc_loader, device, dataset_label='RWC')
-                (t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc) = rwc_res
-                if total_active > 0:
-                    _print_event_level_results(
-                        'RWC Frame-MoE (event-level, cross-dataset)',
-                        t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
-                    json_output['rwc'] = _build_event_level_results_dict(
-                        t_gt, t_p, a_gt, a_p, l_gt, l_p, total_active, total_tc)
-                else:
-                    print('[RWC] No active frames found.')
+                print('[RWC] No active frames found.')
         else:
-            if fmoe_binary_technique:
-                rwc_results = _run_binary_eval_loop(model, rwc_loader, device, dataset_label='RWC')
-                result_data, gate_global, gate_by_class, total_frames = rwc_results
-                if total_frames > 0:
-                    _print_binary_results('RWC Frame-MoE Binary (cross-dataset)',
-                                          result_data, gate_global, gate_by_class, total_frames)
-                    json_output['rwc'] = _build_binary_results_dict(
-                        result_data, gate_global, gate_by_class, total_frames)
-                else:
-                    print('[RWC] No active frames found.')
+            rwc_results = _run_eval_loop(model, rwc_loader, device, dataset_label='RWC')
+            if rwc_results[-1] > 0:
+                _print_results('RWC Frame-MoE (cross-dataset)', *rwc_results)
+                json_output['rwc'] = _build_results_dict(*rwc_results)
             else:
-                rwc_results = _run_eval_loop(model, rwc_loader, device, dataset_label='RWC')
-                if rwc_results[-1] > 0:
-                    _print_results('RWC Frame-MoE (cross-dataset)', *rwc_results)
-                    json_output['rwc'] = _build_results_dict(*rwc_results)
-                else:
-                    print('[RWC] No active frames found.')
+                print('[RWC] No active frames found.')
 
     # ---- Save JSON output ----
     if output_json_path:
@@ -985,75 +791,6 @@ def _run_event_level_eval_loop(model, test_loader, device, dataset_label='datase
             total_active, total_trans_correct)
 
 
-def _run_event_level_binary_eval_loop(model, test_loader, device, dataset_label='dataset'):
-    """Event-level evaluation loop for binary technique flags."""
-    flag_names = BINARY_FLAG_NAMES
-    all_gt = {n: [] for n in flag_names}
-    all_pred = {n: [] for n in flag_names}
-    total_active = 0
-    total_trans_correct = 0
-
-    with torch.no_grad():
-        for batch_idx, batch_data_dict in enumerate(test_loader):
-            for key in batch_data_dict:
-                batch_data_dict[key] = move_data_to_device(batch_data_dict[key], device)
-
-            output_dict = model(batch_data_dict['waveform'])
-
-            if 'fmoe_binary_probs' not in output_dict:
-                continue
-            if 'frame_roll' not in batch_data_dict or 'frame_output' not in output_dict:
-                continue
-
-            frame_roll = batch_data_dict['frame_roll']
-            frame_output = output_dict['frame_output']
-            active = (frame_roll.sum(dim=-1) > 0)
-            probs_dict = output_dict['fmoe_binary_probs']
-
-            first_prob = next(iter(probs_dict.values()))
-            T = min(frame_roll.shape[1], frame_output.shape[1],
-                    first_prob.shape[1], active.shape[1])
-            frame_roll_t = frame_roll[:, :T]
-            frame_output_t = frame_output[:, :T]
-            active = active[:, :T]
-
-            trans_ok = _transcription_correct_mask(frame_roll_t, frame_output_t)
-
-            B = active.shape[0]
-            for b in range(B):
-                m_active = active[b].cpu().numpy().astype(bool)
-                m_trans = trans_ok[b].cpu().numpy().astype(bool)
-                n_active = int(m_active.sum())
-                if n_active == 0:
-                    continue
-                total_active += n_active
-                total_trans_correct += int((m_active & m_trans).sum())
-
-                for name in flag_names:
-                    prob = probs_dict[name][b, :T].squeeze(-1)
-                    pred = (prob > 0.5).long().cpu().numpy().copy()
-                    pred[~m_trans] = -1
-
-                    gt_tensor = batch_data_dict.get(name)
-                    if gt_tensor is not None:
-                        gt = (gt_tensor[b, :T] > 0.5).long().cpu().numpy()
-                        all_gt[name].extend(gt[m_active])
-                        all_pred[name].extend(pred[m_active])
-
-            if (batch_idx + 1) % 20 == 0:
-                pct = total_trans_correct / max(total_active, 1) * 100
-                print(f'  [{dataset_label}] batch {batch_idx + 1}: '
-                      f'{total_active} active, {total_trans_correct} trans-ok ({pct:.1f}%)')
-
-    result = {}
-    for name in flag_names:
-        result[name] = {
-            'gt': np.array(all_gt[name], dtype=int),
-            'pred': np.array(all_pred[name], dtype=int),
-        }
-    return result, total_active, total_trans_correct
-
-
 def _compute_event_level_metrics(gt, pred, class_names):
     """Compute event-level metrics.  pred may contain -1 sentinels for
     frames where transcription was wrong."""
@@ -1174,33 +911,6 @@ def _print_event_level_results(banner, tonal_gt, tonal_pred, artic_gt, artic_pre
         print()
 
 
-def _print_event_level_binary_results(banner, result, total_active, total_trans_correct):
-    pct = total_trans_correct / max(total_active, 1) * 100
-    print()
-    print('=' * 70)
-    print(f'  {banner} [Event-Level, Binary Flags]')
-    print(f'  Active frames: {total_active}  |  '
-          f'Transcription correct: {total_trans_correct} ({pct:.1f}%)')
-    print('=' * 70)
-
-    binary_cls = {0: 'negative', 1: 'positive'}
-    all_f1 = []
-    for name in BINARY_FLAG_NAMES:
-        if name not in result:
-            continue
-        gt = result[name]['gt']
-        pred = result[name]['pred']
-        all_f1 += _print_event_level_head(f'Binary: {name}', gt, pred, binary_cls)
-
-    if all_f1:
-        overall = np.mean(all_f1)
-        print('=' * 70)
-        print(f'  All-Technique Event-Level Macro F1: {overall:.4f}')
-        print(f'  (mean of {len(all_f1)} per-class F1 scores across all flags)')
-        print('=' * 70)
-        print()
-
-
 def _build_event_level_results_dict(tonal_gt, tonal_pred, artic_gt, artic_pred,
                                     legato_gt, legato_pred,
                                     total_active, total_trans_correct):
@@ -1221,26 +931,6 @@ def _build_event_level_results_dict(tonal_gt, tonal_pred, artic_gt, artic_pred,
         'legato': legato_m,
         'all_technique_macro_f1': round(float(np.mean(all_f1)), 4) if all_f1 else 0.0,
     }
-
-
-def _build_event_level_binary_results_dict(result, total_active, total_trans_correct):
-    pct = round(total_trans_correct / max(total_active, 1) * 100, 2)
-    binary_cls = {0: 'negative', 1: 'positive'}
-    out = {
-        'total_active_frames': int(total_active),
-        'transcription_correct_frames': int(total_trans_correct),
-        'transcription_correct_pct': pct,
-    }
-    all_f1 = []
-    for name in BINARY_FLAG_NAMES:
-        if name not in result:
-            continue
-        m, f1_list = _compute_event_level_metrics(
-            result[name]['gt'], result[name]['pred'], binary_cls)
-        out[name] = m
-        all_f1 += f1_list
-    out['all_technique_macro_f1'] = round(float(np.mean(all_f1)), 4) if all_f1 else 0.0
-    return out
 
 
 if __name__ == '__main__':
@@ -1286,14 +976,14 @@ if __name__ == '__main__':
                         help='Use CRNN-as-Expert MoE (must match training)')
     parser.add_argument('--fmoe_shared_crnn_moe', type=int, default=0, choices=[0, 1],
                         help='Use Shared-CNN MoE (must match training)')
-    parser.add_argument('--fmoe_binary_technique', type=int, default=0, choices=[0, 1],
-                        help='Binary technique decomposition (must match training)')
     parser.add_argument('--fmoe_mert_backbone', type=int, default=0, choices=[0, 1],
                         help='Use frozen MERT-v1-330M backbone (must match training)')
     parser.add_argument('--fmoe_mert_moe', type=int, default=0, choices=[0, 1],
                         help='MERT Multi-Scale MoE backbone+head (must match training)')
     parser.add_argument('--fmoe_mert_moe_hierarchical', type=int, default=0, choices=[0, 1],
                         help='MERT MoE + hierarchical prediction (must match training)')
+    parser.add_argument('--fmoe_mert_no_layer_weight', type=int, default=0, choices=[0, 1],
+                        help='Disable per-expert MERT layer weighting (must match training)')
     parser.add_argument('--output_json', type=str, default=None,
                         help='Path to save evaluation results as JSON')
     parser.add_argument('--technique_label_config', type=str, default=None,

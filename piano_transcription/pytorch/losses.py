@@ -235,14 +235,8 @@ def pertask_zone_moe_technique_losses(output_dict, target_dict, device=None, foc
 def frame_multiscale_moe_losses(output_dict, target_dict, device=None, focal_gamma=0.0):
     """Frame-level multi-scale MoE technique losses.
 
-    Dispatches to binary or multi-class loss depending on output_dict contents.
-    Multi-class returns (loss_tonal, loss_artic, loss_legato, loss_balance, loss_aux).
-    Binary returns (per_flag_losses_dict, loss_balance, loss_aux).
+    Returns (loss_tonal, loss_artic, loss_legato, loss_balance, loss_aux).
     """
-    if 'fmoe_binary_probs' in output_dict:
-        from moe_frame_multiscale import frame_moe_binary_technique_losses
-        return frame_moe_binary_technique_losses(
-            output_dict, target_dict, device=device)
     from moe_frame_multiscale import frame_moe_technique_losses
     return frame_moe_technique_losses(output_dict, target_dict, device=device,
                                       focal_gamma=focal_gamma)

@@ -2,7 +2,7 @@
 
 Extracts gate-mixed expert features from the frame MoE head via forward
 hooks and creates UMAP scatter plots colored by technique labels
-(tonal, articulation, legato — or binary flags).
+(tonal, articulation, legato).
 
 Usage:
     python visualize_umap_frame_moe.py \
@@ -37,7 +37,6 @@ _label_cfg = get_technique_labels()
 TONAL_NAMES = _label_cfg.tonal_names
 ARTIC_NAMES = _label_cfg.artic_names
 LEGATO_NAMES = {0: 'sustained', 1: 'bow_change'}
-BINARY_FLAG_NAMES = ['pizzicato', 'harmonic', 'spiccato', 'legato']
 
 
 def _reload_label_config(config_path):
@@ -100,7 +99,6 @@ def build_model(args):
     fmoe_hierarchical = bool(getattr(args, 'fmoe_hierarchical', 0))
     fmoe_hierarchical_multilevel = bool(getattr(args, 'fmoe_hierarchical_multilevel', 0))
     fmoe_hierarchical_moe = bool(getattr(args, 'fmoe_hierarchical_moe', 0))
-    fmoe_binary_technique = bool(getattr(args, 'fmoe_binary_technique', 0))
     fmoe_spectral = bool(getattr(args, 'fmoe_spectral_expert', 1))
 
     fmoe_mask_str = getattr(args, 'fmoe_expert_mask', None)
@@ -123,8 +121,27 @@ def build_model(args):
     fmoe_multi_crnn = bool(getattr(args, 'fmoe_multi_crnn', 0))
     fmoe_crnn_moe = bool(getattr(args, 'fmoe_crnn_moe', 0))
     fmoe_shared_crnn_moe = bool(getattr(args, 'fmoe_shared_crnn_moe', 0))
+    fmoe_mert_backbone = bool(getattr(args, 'fmoe_mert_backbone', 0))
+    fmoe_mert_moe = bool(getattr(args, 'fmoe_mert_moe', 0))
+    fmoe_mert_moe_hier = bool(getattr(args, 'fmoe_mert_moe_hierarchical', 0))
+    if fmoe_mert_moe_hier:
+        fmoe_mert_moe = True
 
-    if fmoe_shared_crnn_moe:
+    if fmoe_mert_moe:
+        from mert_moe_backbone import MERTMoEConfig
+        _mm_kw = dict(
+            use_cues=fmoe_use_cues,
+            expert_mask=fmoe_expert_mask,
+            hierarchical=fmoe_mert_moe_hier,
+            use_layer_weight=(not bool(getattr(args, 'fmoe_mert_no_layer_weight', 0))),
+        )
+        if fmoe_temporal_experts:
+            _mm_kw['temporal_experts'] = fmoe_temporal_experts
+        fmoe_top_k = getattr(args, 'fmoe_top_k', None)
+        if fmoe_top_k is not None:
+            _mm_kw['top_k'] = fmoe_top_k
+        frame_moe_cfg = MERTMoEConfig(**_mm_kw)
+    elif fmoe_shared_crnn_moe:
         from moe_crnn_backbone import SharedCNNMoEConfig
         _kw = dict(expert_mask=fmoe_expert_mask, use_cues=fmoe_use_cues)
         fmoe_top_k = getattr(args, 'fmoe_top_k', None)
@@ -176,7 +193,6 @@ def build_model(args):
             uniform_routing=bool(getattr(args, 'fmoe_uniform_routing', 0)),
             temporal_experts=fmoe_temporal_experts,
             use_cues=fmoe_use_cues,
-            binary_technique=fmoe_binary_technique,
         )
         fmoe_top_k = getattr(args, 'fmoe_top_k', None)
         if fmoe_top_k is not None:
@@ -202,6 +218,8 @@ def build_model(args):
         multi_crnn_head=fmoe_multi_crnn,
         crnn_moe_head=fmoe_crnn_moe,
         shared_crnn_moe_head=fmoe_shared_crnn_moe,
+        mert_backbone=fmoe_mert_backbone,
+        mert_moe_head=fmoe_mert_moe,
     )
 
     model.load_state_dict(state, strict=False)
@@ -209,14 +227,14 @@ def build_model(args):
     model.eval()
     print(f'[UMAP] Model loaded from {args.checkpoint_path}')
 
-    return model, device, fmoe_binary_technique
+    return model, device
 
 
 # -----------------------------------------------------------------------
 # Hook-based feature extraction
 # -----------------------------------------------------------------------
 
-def _register_hooks(model, binary_mode):
+def _register_hooks(model):
     """Register forward hooks on classification heads to capture their 128-D input."""
     captured = {}
     hooks = []
@@ -227,36 +245,29 @@ def _register_hooks(model, binary_mode):
             captured[key] = input[0].detach()
         return fn
 
-    if binary_mode and hasattr(head, 'heads'):
-        for name in BINARY_FLAG_NAMES:
-            if name in head.heads:
-                hooks.append(
-                    head.heads[name].register_forward_hook(_make_hook(name)))
-    else:
-        for attr, key in [('tonal_head', 'tonal'),
-                          ('artic_head', 'artic'),
-                          ('legato_head', 'legato')]:
-            if hasattr(head, attr):
-                hooks.append(
-                    getattr(head, attr).register_forward_hook(_make_hook(key)))
+    for attr, key in [('tonal_head', 'tonal'),
+                      ('artic_head', 'artic'),
+                      ('legato_head', 'legato')]:
+        if hasattr(head, attr):
+            hooks.append(
+                getattr(head, attr).register_forward_hook(_make_hook(key)))
 
     return captured, hooks
 
 
-def collect_embeddings(model, loader, device, binary_mode=False, max_batches=0):
+def collect_embeddings(model, loader, device, max_batches=0):
     """Run inference and collect per-frame embeddings + GT labels.
 
     max_batches=0 means unlimited (use all available batches).
     If the batch contains 'source_id' (injected by _DatasetWithSource),
     it is collected alongside features for per-performer marker plotting.
     """
-    captured, hooks = _register_hooks(model, binary_mode)
+    captured, hooks = _register_hooks(model)
 
     task_feats = {}
     task_labels = {}
     task_source = {}
     combined_feats = []
-    combined_flag_labels = {f: [] for f in BINARY_FLAG_NAMES} if binary_mode else {}
     combined_mc_labels = {}
     combined_source_ids = []
     has_source = False
@@ -303,59 +314,37 @@ def collect_embeddings(model, loader, device, binary_mode=False, max_batches=0):
                     sid = int(batch_source[b])
                     src_fill = np.full(n_active, sid, dtype=np.int32)
 
-                if binary_mode:
-                    frame_feats = shared_feats
-                    flag_row = {}
-                    for flag in BINARY_FLAG_NAMES:
-                        gt = batch.get(flag)
-                        if gt is None:
-                            continue
+                mc_row = {}
+                for src_key, task_key, is_soft in [
+                    ('tonal_technique', 'tonal', False),
+                    ('articulation', 'artic', False),
+                    ('legato', 'legato', True),
+                ]:
+                    gt = batch.get(src_key)
+                    if gt is None:
+                        continue
+                    if is_soft:
                         lab = (gt[b, :T] > 0.5).long().cpu().numpy()[m]
-                        task_feats.setdefault(flag, []).append(frame_feats)
-                        task_labels.setdefault(flag, []).append(lab)
-                        if src_fill is not None:
-                            task_source.setdefault(flag, []).append(src_fill)
-                        flag_row[flag] = lab
+                    else:
+                        lab = gt[b, :T].cpu().numpy()[m].astype(int)
 
-                    if flag_row:
-                        combined_feats.append(shared_feats)
-                        if src_fill is not None:
-                            combined_source_ids.append(src_fill)
-                        for flag in BINARY_FLAG_NAMES:
-                            if flag in flag_row:
-                                combined_flag_labels[flag].append(flag_row[flag])
-                else:
-                    mc_row = {}
-                    for src_key, task_key, is_soft in [
-                        ('tonal_technique', 'tonal', False),
-                        ('articulation', 'artic', False),
-                        ('legato', 'legato', True),
-                    ]:
-                        gt = batch.get(src_key)
-                        if gt is None:
-                            continue
-                        if is_soft:
-                            lab = (gt[b, :T] > 0.5).long().cpu().numpy()[m]
-                        else:
-                            lab = gt[b, :T].cpu().numpy()[m].astype(int)
+                    feat = captured.get(task_key)
+                    if feat is None:
+                        feat = next(iter(captured.values()))
+                    frame_feats = feat[b, :T].cpu().numpy()[m]
 
-                        feat = captured.get(task_key)
-                        if feat is None:
-                            feat = next(iter(captured.values()))
-                        frame_feats = feat[b, :T].cpu().numpy()[m]
+                    task_feats.setdefault(task_key, []).append(frame_feats)
+                    task_labels.setdefault(task_key, []).append(lab)
+                    if src_fill is not None:
+                        task_source.setdefault(task_key, []).append(src_fill)
+                    mc_row[task_key] = lab
 
-                        task_feats.setdefault(task_key, []).append(frame_feats)
-                        task_labels.setdefault(task_key, []).append(lab)
-                        if src_fill is not None:
-                            task_source.setdefault(task_key, []).append(src_fill)
-                        mc_row[task_key] = lab
-
-                    if mc_row:
-                        combined_feats.append(shared_feats)
-                        if src_fill is not None:
-                            combined_source_ids.append(src_fill)
-                        for k, v in mc_row.items():
-                            combined_mc_labels.setdefault(k, []).append(v)
+                if mc_row:
+                    combined_feats.append(shared_feats)
+                    if src_fill is not None:
+                        combined_source_ids.append(src_fill)
+                    for k, v in mc_row.items():
+                        combined_mc_labels.setdefault(k, []).append(v)
 
             if (batch_idx + 1) % 50 == 0:
                 n = sum(len(x) for x in combined_feats)
@@ -378,12 +367,8 @@ def collect_embeddings(model, loader, device, binary_mode=False, max_batches=0):
     # Combined result
     if combined_feats:
         c_feats = np.concatenate(combined_feats, axis=0)
-        if binary_mode:
-            c_labels = _compose_binary_combined(
-                {f: np.concatenate(v) for f, v in combined_flag_labels.items() if v})
-        else:
-            c_labels = _compose_multiclass_combined(
-                {k: np.concatenate(v) for k, v in combined_mc_labels.items() if v})
+        c_labels = _compose_multiclass_combined(
+            {k: np.concatenate(v) for k, v in combined_mc_labels.items() if v})
         combined_entry = {'features': c_feats, 'labels': c_labels}
         if has_source and combined_source_ids:
             combined_entry['source_ids'] = np.concatenate(combined_source_ids)
@@ -393,23 +378,6 @@ def collect_embeddings(model, loader, device, binary_mode=False, max_batches=0):
 
 
 # Combined technique label composers
-
-COMBINED_BINARY_NAMES = {
-    0: 'normal', 1: 'pizzicato', 2: 'harmonic', 3: 'spiccato', 4: 'legato',
-}
-
-def _compose_binary_combined(flag_arrays):
-    """Compose a single categorical label from binary flag arrays.
-
-    Priority: pizzicato > harmonic > spiccato > legato > normal.
-    """
-    n = len(next(iter(flag_arrays.values())))
-    labels = np.zeros(n, dtype=int)
-    for flag, cls_id in [('legato', 4), ('spiccato', 3),
-                         ('harmonic', 2), ('pizzicato', 1)]:
-        if flag in flag_arrays:
-            labels[flag_arrays[flag] == 1] = cls_id
-    return labels
 
 
 COMBINED_MC_NAMES = {
@@ -645,12 +613,7 @@ def _make_rwc_loader(args):
 # Main
 # -----------------------------------------------------------------------
 
-def _task_configs(binary_mode):
-    if binary_mode:
-        binary_names = {0: 'negative', 1: 'positive'}
-        per_flag = [(f, binary_names, f'Binary: {f}') for f in BINARY_FLAG_NAMES]
-        combined = [('combined', COMBINED_BINARY_NAMES, 'All Techniques')]
-        return per_flag, combined
+def _task_configs():
     per_task = [
         ('tonal', TONAL_NAMES, 'Tonal Technique'),
         ('artic', ARTIC_NAMES, 'Articulation'),
@@ -692,11 +655,11 @@ def _run_umap_for_tasks(data, task_list, args, dataset_tag, source_names=None):
             plot_umap(Z, y_s, class_names, title, out)
 
 
-def _process_dataset(model, loader, device, binary_mode, args,
+def _process_dataset(model, loader, device, args,
                      dataset_tag, per_task_cfgs, combined_cfgs,
                      source_names=None):
     print(f'\n[UMAP] Collecting embeddings from {dataset_tag}...')
-    data = collect_embeddings(model, loader, device, binary_mode, args.max_batches)
+    data = collect_embeddings(model, loader, device, args.max_batches)
 
     _run_umap_for_tasks(data, per_task_cfgs, args, dataset_tag, source_names)
     _run_umap_for_tasks(data, combined_cfgs, args, dataset_tag, source_names)
@@ -729,7 +692,14 @@ def main():
     parser.add_argument('--fmoe_multi_crnn', type=int, default=0)
     parser.add_argument('--fmoe_crnn_moe', type=int, default=0)
     parser.add_argument('--fmoe_shared_crnn_moe', type=int, default=0)
-    parser.add_argument('--fmoe_binary_technique', type=int, default=0)
+    parser.add_argument('--fmoe_mert_backbone', type=int, default=0, choices=[0, 1],
+                        help='Use frozen MERT-v1-330M as the technique backbone (w/o MoE baseline).')
+    parser.add_argument('--fmoe_mert_moe', type=int, default=0, choices=[0, 1],
+                        help='Use the MERT Multi-Scale MoE head (the VioTech proposed model).')
+    parser.add_argument('--fmoe_mert_moe_hierarchical', type=int, default=0, choices=[0, 1],
+                        help='MERT Multi-Scale MoE with hierarchical prediction.')
+    parser.add_argument('--fmoe_mert_no_layer_weight', type=int, default=0, choices=[0, 1],
+                        help='Disable per-expert MERT layer weighting (must match training).')
     parser.add_argument('--technique_label_config', type=str, default=None)
 
     # RWC
@@ -754,21 +724,21 @@ def main():
     if args.technique_label_config:
         _reload_label_config(args.technique_label_config)
 
-    model, device, binary_mode = build_model(args)
+    model, device = build_model(args)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    per_task_cfgs, combined_cfgs = _task_configs(binary_mode)
+    per_task_cfgs, combined_cfgs = _task_configs()
 
     # Viotech
     vio_loader, vio_source_names = _make_viotech_loader(args)
-    _process_dataset(model, vio_loader, device, binary_mode, args,
+    _process_dataset(model, vio_loader, device, args,
                      'viotech', per_task_cfgs, combined_cfgs,
                      source_names=vio_source_names)
 
     # RWC (optional)
     rwc_loader, rwc_source_names = _make_rwc_loader(args)
     if rwc_loader is not None:
-        _process_dataset(model, rwc_loader, device, binary_mode, args,
+        _process_dataset(model, rwc_loader, device, args,
                          'rwc', per_task_cfgs, combined_cfgs,
                          source_names=rwc_source_names)
 
